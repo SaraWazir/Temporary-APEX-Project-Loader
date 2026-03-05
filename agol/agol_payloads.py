@@ -59,7 +59,7 @@ import streamlit as st
 from shapely.geometry import LineString, Point, Polygon
 import datetime
 from agol.agol_util import select_record, get_objectids_by_identifier
-from util.geospatial_util import GeometryUtil, create_buffers
+from util.geospatial_util import center_of_geometry, create_buffers
 
 # =============================================================================
 # PAYLOAD CLEANING / NORMALIZATION HELPERS
@@ -432,19 +432,17 @@ def location_payload():
       4) Build and return the applyEdits payload with Impact_Area attributes.
     """
     try:
-         # Set GeometryUTIL
-        geom = GeometryUtil(epsg=4326)
 
         # Determine center based on selected geometry
         if st.session_state.get("selected_point"):
             pt = st.session_state["selected_point"]
-            st.session_state['center'] = geom.center(pt, 'point')
+            st.session_state['center'] = center_of_geometry(pt, "Point")
         elif st.session_state.get("selected_route"):
             route = st.session_state["selected_route"]
-            st.session_state['center'] =  geom.center(route, 'line')
+            st.session_state['center'] =  center_of_geometry(route, "Line")
         elif st.session_state.get("selected_boundary"):
             boundary = st.session_state["selected_boundary"]
-            st.session_state['center'] = geom.center(boundary, 'polygon')
+            st.session_state['center'] = center_of_geometry(boundary, "Polygon")
 
 
         # --- Build payload with Impact_Area attribute schema ---
@@ -723,8 +721,9 @@ def traffic_impact_payload():
                         "Start_Y": st.session_state.get("project_impact_start_point_y"),
                         "End_X": st.session_state.get("project_impact_end_point_x"),
                         "End_Y": st.session_state.get("project_impact_end_point_y"),
-                        "Event_Type": "Roadwork / Maintenance",
+                        "Event_Type_COMM": "Roadwork / Maintenance",
                         "Assignee": "Unassigned",
+                        "Alaska_511_COMM": "No", 
                         "Alaska_511": "No",
                         "APEX_GUID": st.session_state.get("apex_globalid").strip("{}"),
                         "APEX_Database_Status": "Review: Awaiting Review"

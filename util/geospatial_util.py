@@ -1,28 +1,13 @@
-from math import floor, hypot  # hypot used by line center logic
+from typing import List, Sequence, Tuple, Literal
+from math import hypot
 
 from shapely.geometry import (
-    Point,
-    LineString,
-    Polygon,
-    MultiPoint,
-    MultiLineString,
-    MultiPolygon
+    Point as ShapelyPoint,
+    LineString as ShapelyLineString,
+    MultiLineString as ShapelyMultiLineString,
+    Polygon as ShapelyPolygon,
+    MultiPolygon as ShapelyMultiPolygon,
 )
-from typing import List, Sequence, Literal
-from shapely.geometry import Point, LineString, Polygon, mapping, shape
-from shapely.ops import transform
-import pyproj
-
-
-from typing import List, Sequence, Literal
-from shapely.geometry import Point, LineString, Polygon
-from shapely.ops import transform
-import pyproj
-from shapely.geometry.base import BaseGeometry
-
-from typing import List, Sequence, Literal
-from shapely.geometry import Point, LineString, Polygon
-from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform
 import pyproj
 
@@ -71,7 +56,7 @@ def create_buffers(
 
     # Shapely accepts integer codes for cap/join styles:
     # cap_style: round=1, flat=2, square=3
-    # join_style: round=1, mitre=2, bevel=3
+    # join_style: round=1, mitre/miter=2, bevel=3
     cap_lookup = {"round": 1, "flat": 2, "square": 3}
     join_lookup = {"round": 1, "mitre": 2, "miter": 2, "bevel": 3}
 
@@ -99,20 +84,26 @@ def create_buffers(
         # Ensure an iterable of (lon, lat) tuples with numeric values
         return [(float(lon), float(lat)) for lon, lat in seq]
 
-    def build_geom(item: Sequence) -> BaseGeometry:
+    def build_geom(item: Sequence):
         if gt == "point":
             # Accept [lon, lat] or [[lon, lat]] (take first)
+            if isinstance(item, (ShapelyPoint,)):
+                return item
             if isinstance(item[0], (int, float)):
                 lon, lat = item  # type: ignore
             else:
                 lon, lat = item[0]  # type: ignore
-            return Point((float(lon), float(lat)))
+            return ShapelyPoint((float(lon), float(lat)))
 
         elif gt == "linestring":
+            if isinstance(item, (ShapelyLineString, ShapelyMultiLineString)):
+                return item
             coords = _as_lonlat_tuples(item)  # type: ignore
-            return LineString(coords)
+            return ShapelyLineString(coords)
 
         elif gt == "polygon":
+            if isinstance(item, (ShapelyPolygon, ShapelyMultiPolygon)):
+                return item
             ring = list(item)  # type: ignore
             if len(ring) < 3:
                 raise ValueError("Polygon ring must have at least 3 coordinate pairs")
@@ -120,9 +111,8 @@ def create_buffers(
             if ring[0] != ring[-1]:
                 ring = ring + [ring[0]]
             coords = _as_lonlat_tuples(ring)
-            return Polygon(coords)
+            return ShapelyPolygon(coords)
 
-        # Unreachable
         raise ValueError("Unsupported geometry type")
 
     buffers_lonlat: List[List[List[float]]] = []
@@ -152,164 +142,181 @@ def create_buffers(
     return buffers_lonlat
 
 
+def center_of_geometry(
+    geometry_list: List[Sequence],
+    geom_type: Literal["Point", "LineString", "Polygon", "point", "line", "linestring", "polygon"],
+) -> Tuple[float, float]:
+    """
+    Compute a representative center in [lon, lat] for the submitted geometry list, behaving
+    like the old GeometryUtil.center(...) pattern:
+      - Accepts a list of inputs of the specified type (Point, LineString, Polygon).
+      - Each input can be a raw coordinate list OR a Shapely geometry.
+      - If multiple geometries are supplied, returns the average of their per-geometry centers.
+      - Coordinate order is always (lon, lat).
 
+    Parameters
+    ----------
+    geometry_list : list
+        List of geometries. Coordinates must be [lon, lat].
+        - Points:      [lon, lat] OR [[lon, lat]]
+        - LineString:  [[lon, lat], [lon, lat], ...] OR list of such lines
+        - Polygon:     [[lon, lat], ..., [lon, lat]] OR list of such rings (closed or open)
+    geom_type : {"Point","LineString","Polygon"} (case-insensitive; "Line" also allowed)
 
-class GeometryUtil:
-    def __init__(self, epsg=None):
-        """
-        epsg: (Unused by centers) preserved for API compatibility.
-        """
-        self.fixed_epsg = epsg
+    Returns
+    -------
+    (lon, lat) : Tuple[float, float]
+        A single center point representing all provided geometries.
+    """
+
+    if not geometry_list:
+        raise ValueError("geometry_list is empty")
+
+    gt = (geom_type or "").lower()
+    if gt in ("line", "linestring"):
+        gt = "linestring"
+    elif gt in ("point", "polygon"):
+        pass
+    else:
+        raise ValueError("geom_type must be 'Point', 'LineString', or 'Polygon'")
+
+    def _is_lonlat_pair(v) -> bool:
+        return isinstance(v, (list, tuple)) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v)
 
     # -------------------------
-    # Public: generic dispatch
+    # Point helpers
     # -------------------------
-    def center(self, geom, geom_type: str):
-        """
-        Compute a representative center.
-        Returns (lon, lat).
-        """
-        gt = (geom_type or "").lower()
-        if gt in ("point", "points"):
-            return self.point_center(geom)
-        if gt in ("line", "lines", "polyline", "polylines"):
-            return self.line_center(geom)
-        if gt in ("polygon", "polygons"):
-            return self.polygon_center(geom)
-        raise ValueError(f"Unsupported geom_type for center(): {geom_type}")
+    def _flatten_points_like(points_input) -> List[Tuple[float, float]]:
+        flat = []
+        # Shapely Point
+        if isinstance(points_input, ShapelyPoint):
+            flat.append((float(points_input.x), float(points_input.y)))
+            return flat
 
-    # -------------------------
-    # Public: centers
-    # -------------------------
-    def point_center(self, points):
-        """
-        Accepts point(s) in (lon, lat) and returns (lon, lat).
-        """
-        flat_points = self._flatten_points_like(points)
-        if not flat_points:
+        # [lon, lat]
+        if _is_lonlat_pair(points_input):
+            lon, lat = points_input  # type: ignore
+            flat.append((float(lon), float(lat)))
+            return flat
+
+        # [[lon, lat], ...] or nested list
+        if isinstance(points_input, (list, tuple)):
+            for item in points_input:
+                if _is_lonlat_pair(item):
+                    lon, lat = item  # type: ignore
+                    flat.append((float(lon), float(lat)))
+                elif isinstance(item, (list, tuple)):
+                    for pt in item:
+                        if _is_lonlat_pair(pt):
+                            lon, lat = pt  # type: ignore
+                            flat.append((float(lon), float(lat)))
+        return flat
+
+    def _point_center(points_any) -> Tuple[float, float]:
+        pts = _flatten_points_like(points_any)
+        if not pts:
             raise ValueError("No valid point data found.")
-
-        if len(flat_points) == 1:
-            lon, lat = flat_points[0]
-            return (float(lon), float(lat))
-
-        lons = [float(pt[0]) for pt in flat_points]
-        lats = [float(pt[1]) for pt in flat_points]
-        return (sum(lons) / len(lons), sum(lats) / len(lats))
-
-    def line_center(self, line_geom):
-        if self._is_shapely_multiline(line_geom):
-            centers = [self._center_single_line(ls) for ls in line_geom.geoms]
-            return self._average_centers(centers)
-        if self._is_shapely_linestring(line_geom):
-            return self._center_single_line(line_geom)
-
-        # Coordinate-list cases
-        if isinstance(line_geom, list) and len(line_geom) > 0 and isinstance(line_geom[0], list):
-            # Multiple lines (e.g., multi-part) -> average centers
-            if len(line_geom[0]) > 0 and isinstance(line_geom[0][0], (list, tuple)):
-                centers = [self._center_single_line(poly) for poly in line_geom]
-                return self._average_centers(centers)
-            # Single line [(lon, lat), ...]
-            if len(line_geom[0]) == 2:
-                return self._center_single_line(line_geom)
-
-        # Fallback
-        return self._center_single_line(line_geom)
-
-    def polygon_center(self, poly_geom):
-        if self._is_shapely_multipolygon(poly_geom):
-            centers = [self._center_single_polygon(pg) for pg in poly_geom.geoms]
-            return self._average_centers(centers)
-        if self._is_shapely_polygon(poly_geom):
-            return self._center_single_polygon(poly_geom)
-
-        # Coordinate-list cases
-        if isinstance(poly_geom, list) and len(poly_geom) > 0 and isinstance(poly_geom[0], list):
-            # Multiple polygons -> average centers
-            if len(poly_geom[0]) > 0 and isinstance(poly_geom[0][0], (list, tuple)):
-                centers = [self._center_single_polygon(pg) for pg in poly_geom]
-                return self._average_centers(centers)
-            # Single polygon ring [(lon, lat), ...]
-            if len(poly_geom[0]) == 2:
-                return self._center_single_polygon(poly_geom)
-
-        # Fallback
-        return self._center_single_polygon(poly_geom)
+        if len(pts) == 1:
+            return pts[0]
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        return (sum(xs) / len(xs), sum(ys) / len(ys))
 
     # -------------------------
-    # Internal helpers (centers)
+    # Line helpers
     # -------------------------
-    def _center_single_line(self, g):
-        """
-        Accepts LineString-like geometry and returns center point (lon, lat).
-        """
-        # Shapely LineString
-        if self._is_shapely_linestring(g):
-            mid = g.interpolate(g.length / 2.0)
-            return (mid.x, mid.y)  # (lon, lat)
+    def _is_shapely_linestring(obj) -> bool:
+        return isinstance(obj, ShapelyLineString)
 
-        # List-like coordinates
-        coords = g
+    def _is_shapely_multiline(obj) -> bool:
+        return isinstance(obj, ShapelyMultiLineString)
+
+    def _center_single_line_coords(coords: Sequence[Sequence[float]]) -> Tuple[float, float]:
         if not isinstance(coords, (list, tuple)) or len(coords) == 0:
             raise ValueError("Invalid line geometry.")
-
-        if len(coords) < 2:
-            # Single coordinate
+        if len(coords) == 1:
             lon, lat = coords[0]
-            return (lon, lat)
-
-        # Total length in lon-lat plane (euclidean on projected/plain degrees)
-        from math import hypot
+            return (float(lon), float(lat))
 
         total = 0.0
         for i in range(len(coords) - 1):
             a = coords[i]; b = coords[i + 1]
-            total += hypot(b[0] - a[0], b[1] - a[1])  # use (lon, lat)
+            total += hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
 
         target = total / 2.0
         d = 0.0
         for i in range(len(coords) - 1):
             a = coords[i]; b = coords[i + 1]
-            seg = hypot(b[0] - a[0], b[1] - a[1])
-            if d + seg >= target and seg > 0.0:
+            seg = hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+            if seg > 0.0 and d + seg >= target:
                 t = (target - d) / seg
-                lon = a[0] + t * (b[0] - a[0])
-                lat = a[1] + t * (b[1] - a[1])
+                lon = float(a[0]) + t * (float(b[0]) - float(a[0]))
+                lat = float(a[1]) + t * (float(b[1]) - float(a[1]))
                 return (lon, lat)
             d += seg
-
         lon, lat = coords[-1]
-        return (lon, lat)
+        return (float(lon), float(lat))
 
-    def _center_single_polygon(self, g):
-        """
-        Accepts Polygon-like geometry and returns centroid (lon, lat).
-        """
-        # Shapely Polygon
-        if self._is_shapely_polygon(g):
-            c = g.centroid
-            return (c.x, c.y)  # (lon, lat)
+    def _line_center(line_any) -> Tuple[float, float]:
+        # Shapely MultiLineString -> average of per-line centers
+        if _is_shapely_multiline(line_any):
+            centers = [_line_center(ls) for ls in line_any.geoms]
+            return _average_centers(centers)
 
-        # List-like polygon ring
-        coords = g
-        if len(coords) < 3:
-            if len(coords) == 1:
-                lon, lat = coords[0]
-                return (lon, lat)
-            if len(coords) == 2:
-                (lon1, lat1), (lon2, lat2) = coords
-                return ((lon1 + lon2) / 2.0, (lat1 + lat2) / 2.0)
-            raise ValueError("Polygon must have at least 3 coordinates")
+        # Shapely LineString
+        if _is_shapely_linestring(line_any):
+            mid = line_any.interpolate(line_any.length / 2.0)
+            return (float(mid.x), float(mid.y))
 
-        # Ensure closed ring in (lon, lat)
-        ring = coords if coords[0] == coords[-1] else coords + [coords[0]]
-        xs = [p[0] for p in ring]  # lons
-        ys = [p[1] for p in ring]  # lats
+        # List-like:
+        # - Single line: [[lon, lat], ...]
+        # - Multi lines: [[[lon,lat],...], [[lon,lat],...], ...]
+        if isinstance(line_any, (list, tuple)) and len(line_any) > 0:
+            first = line_any[0]
+            if _is_lonlat_pair(first):
+                return _center_single_line_coords(line_any)  # type: ignore
+            if isinstance(first, (list, tuple)) and len(first) > 0 and _is_lonlat_pair(first[0]):
+                centers = [_center_single_line_coords(line) for line in line_any]  # type: ignore
+                return _average_centers(centers)
 
-        # Shoelace for centroid
-        A = 0.0; Cx = 0.0; Cy = 0.0
-        for i in range(len(ring) - 1):
+        # Fallback attempt
+        return _center_single_line_coords(line_any)
+
+    # -------------------------
+    # Polygon helpers
+    # -------------------------
+    def _is_shapely_polygon(obj) -> bool:
+        return isinstance(obj, ShapelyPolygon)
+
+    def _is_shapely_multipolygon(obj) -> bool:
+        return isinstance(obj, ShapelyMultiPolygon)
+
+    def _center_single_polygon_coords(ring: Sequence[Sequence[float]]) -> Tuple[float, float]:
+        if len(ring) < 1:
+            raise ValueError("Empty polygon ring")
+
+        if len(ring) < 3:
+            # Handle degenerate inputs gracefully (same as previous behavior)
+            if len(ring) == 1:
+                lon, lat = ring[0]
+                return (float(lon), float(lat))
+            if len(ring) == 2:
+                (lon1, lat1), (lon2, lat2) = ring
+                return ((float(lon1) + float(lon2)) / 2.0, (float(lat1) + float(lat2)) / 2.0)
+
+        # Ensure closed
+        closed = list(ring)
+        if closed[0] != closed[-1]:
+            closed = closed + [closed[0]]
+
+        xs = [float(p[0]) for p in closed]
+        ys = [float(p[1]) for p in closed]
+
+        # Shoelace centroid
+        A = 0.0
+        Cx = 0.0
+        Cy = 0.0
+        for i in range(len(closed) - 1):
             cross = xs[i] * ys[i + 1] - xs[i + 1] * ys[i]
             A += cross
             Cx += (xs[i] + xs[i + 1]) * cross
@@ -317,7 +324,7 @@ class GeometryUtil:
         A *= 0.5
 
         if A == 0.0:
-            # Degenerate polygon: average vertices (excluding duplicate last)
+            # Degenerate: average vertices (excluding duplicate last)
             lon_avg = sum(xs[:-1]) / (len(xs) - 1)
             lat_avg = sum(ys[:-1]) / (len(ys) - 1)
             return (lon_avg, lat_avg)
@@ -326,93 +333,66 @@ class GeometryUtil:
         Cy /= (6.0 * A)
         return (Cx, Cy)
 
-    def _average_centers(self, centers):
+    def _polygon_center(poly_any) -> Tuple[float, float]:
+        # Shapely MultiPolygon -> average of per-polygon centroids
+        if _is_shapely_multipolygon(poly_any):
+            centers = [_polygon_center(pg) for pg in poly_any.geoms]
+            return _average_centers(centers)
+
+        # Shapely Polygon
+        if _is_shapely_polygon(poly_any):
+            c = poly_any.centroid
+            return (float(c.x), float(c.y))
+
+        # List-like:
+        # - Single polygon ring: [[lon, lat], ...]
+        # - Multiple polygons: [[[lon,lat],...], [[lon,lat],...], ...]
+        if isinstance(poly_any, (list, tuple)) and len(poly_any) > 0:
+            first = poly_any[0]
+            if _is_lonlat_pair(first):
+                return _center_single_polygon_coords(poly_any)  # type: ignore
+            if isinstance(first, (list, tuple)) and len(first) > 0 and _is_lonlat_pair(first[0]):
+                centers = [_center_single_polygon_coords(pg) for pg in poly_any]  # type: ignore
+                return _average_centers(centers)
+
+        # Fallback attempt
+        return _center_single_polygon_coords(poly_any)
+
+    # -------------------------
+    # General helpers
+    # -------------------------
+    def _average_centers(centers: List[Tuple[float, float]]) -> Tuple[float, float]:
         xs = [c[0] for c in centers]
         ys = [c[1] for c in centers]
         return (sum(xs) / len(xs), sum(ys) / len(ys))
 
     # -------------------------
-    # Internal helpers (flatten/shape)
+    # Dispatch over the list
     # -------------------------
-    def _is_lonlat_pair(self, v):
-        return isinstance(v, (list, tuple)) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v)
+    per_item_centers: List[Tuple[float, float]] = []
+    if gt == "point":
+        # All provided items are considered parts of the same point collection,
+        # consistent with prior behavior -> compute one center from ALL points.
+        all_points: List[Tuple[float, float]] = []
+        for item in geometry_list:
+            all_points.extend(_flatten_points_like(item))
+        if not all_points:
+            raise ValueError("No valid point data found.")
+        if len(all_points) == 1:
+            return all_points[0]
+        return _average_centers(all_points)
 
-    def _flatten_points_like(self, points_input):
-        """
-        Normalizes various point-like shapes into a flat list of (lon, lat).
-        """
-        flat = []
-        if self._is_lonlat_pair(points_input):
-            flat.append(points_input)
-            return flat
-        if isinstance(points_input, (list, tuple)):
-            for item in points_input:
-                if self._is_lonlat_pair(item):
-                    flat.append(item)
-                elif isinstance(item, (list, tuple)):
-                    for pt in item:
-                        if self._is_lonlat_pair(pt):
-                            flat.append(pt)
-        return flat
+    elif gt == "linestring":
+        # Compute center per item (line or list-of-lines), then average
+        for item in geometry_list:
+            per_item_centers.append(_line_center(item))
+        return _average_centers(per_item_centers)
 
-    def _flatten_lines_like(self, line_input):
-        """
-        Normalizes line-like inputs to a list of lines; each line is a list of (lon, lat).
-        """
-        if self._is_shapely_multiline(line_input):
-            out = []
-            for ls in line_input.geoms:
-                out.append([(x, y) for (x, y) in ls.coords])  # keep (lon, lat)
-            return out
-        if self._is_shapely_linestring(line_input):
-            coords = list(line_input.coords)
-            return [[(x, y) for (x, y) in coords]]  # keep (lon, lat)
-        if isinstance(line_input, (list, tuple)) and len(line_input) > 0 and self._is_lonlat_pair(line_input[0]):
-            return [list(line_input)]
-        if isinstance(line_input, (list, tuple)) and len(line_input) > 0 and isinstance(line_input[0], (list, tuple)):
-            if len(line_input[0]) > 0 and isinstance(line_input[0][0], (list, tuple)):
-                return [list(poly) for poly in line_input]
-        return [list(line_input)]
+    elif gt == "polygon":
+        # Compute center per item (polygon or list-of-polygons), then average
+        for item in geometry_list:
+            per_item_centers.append(_polygon_center(item))
+        return _average_centers(per_item_centers)
 
-    def _flatten_polygons_like(self, poly_input):
-        """
-        Normalizes polygon-like inputs to a list of rings; each ring is a list of (lon, lat).
-        """
-        if self._is_shapely_multipolygon(poly_input):
-            out = []
-            for pg in poly_input.geoms:
-                out.append([(x, y) for (x, y) in pg.exterior.coords])  # keep (lon, lat)
-            return out
-        if self._is_shapely_polygon(poly_input):
-            exterior = list(poly_input.exterior.coords)
-            return [[(x, y) for (x, y) in exterior]]  # keep (lon, lat)
-        if isinstance(poly_input, (list, tuple)) and len(poly_input) > 0 and self._is_lonlat_pair(poly_input[0]):
-            return [list(poly_input)]
-        if isinstance(poly_input, (list, tuple)) and len(poly_input) > 0 and isinstance(poly_input[0], (list, tuple)):
-            if len(poly_input[0]) > 0 and isinstance(poly_input[0][0], (list, tuple)):
-                return [list(pg) for pg in poly_input]
-        return [list(poly_input)]
-
-    def _ensure_closed_ring_latlon(self, ring):
-        if len(ring) == 0:
-            return ring
-        return ring if ring[0] == ring[-1] else ring + [ring[0]]
-
-    # -------------------------
-    # Shapely type predicates (restored)
-    # -------------------------
-    def _is_shapely_linestring(self, obj):
-        # Shapely LineString has 'coords' and geom_type 'LineString'
-        return hasattr(obj, "coords") and getattr(obj, "geom_type", "") == "LineString"
-
-    def _is_shapely_multiline(self, obj):
-        # Shapely MultiLineString has geom_type 'MultiLineString' and 'geoms'
-        return getattr(obj, "geom_type", "") == "MultiLineString" and hasattr(obj, "geoms")
-
-    def _is_shapely_polygon(self, obj):
-        # Shapely Polygon has 'exterior' and geom_type 'Polygon'
-        return hasattr(obj, "exterior") and getattr(obj, "geom_type", "") == "Polygon"
-
-    def _is_shapely_multipolygon(self, obj):
-        # Shapely MultiPolygon has geom_type 'MultiPolygon' and 'geoms'
-        return getattr(obj, "geom_type", "") == "MultiPolygon" and hasattr(obj, "geoms")
+    # Unreachable
+    raise ValueError("Unsupported geometry type")

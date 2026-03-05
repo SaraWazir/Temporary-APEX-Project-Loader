@@ -2,7 +2,14 @@
 import streamlit as st
 from streamlit_folium import st_folium
 import folium
-from util.map_util import set_bounds_point, set_bounds_route, set_bounds_boundary, set_zoom, set_center
+from util.map_util import (
+    set_bounds_point, 
+    set_bounds_route, 
+    set_bounds_boundary, 
+    set_zoom, 
+    set_center,
+    geometry_to_folium
+    )
 
 
 # ----------------------------------------------------------------------
@@ -45,14 +52,12 @@ def review_information():
 
     # --- Map of Location ---
     header_with_edit("PROJECT LOCATION", target_step=3, help="Edit Project Loaction")
-    
-    
-    if "selected_point" in st.session_state and st.session_state["selected_point"]:
-        
-        # Get Coordinates (your selected points)
-        coords = st.session_state['selected_point']   # this is already a list of points
 
-        # Compute bounding box
+    if "selected_point" in st.session_state and st.session_state["selected_point"]:
+        # Points: expecting a list of [lon, lat] pairs
+        coords = st.session_state["selected_point"]
+
+        # Compute bounding box and center
         bounds = set_bounds_point(coords)
         center = set_center(bounds)
 
@@ -61,53 +66,56 @@ def review_information():
             location=[center[0], center[1]]
         )
 
-        # Add ALL points to the map
-        for lat, lon in coords:
-            folium.Marker(
-                [lat, lon],
-                icon=folium.Icon(color="blue"),
-                tooltip="Uploaded Point"
-            ).add_to(m)
+        # Add all points via geometry_to_folium (explicit multipoint)
+        geometry_to_folium(
+            coords,
+            feature_type="multipoint",
+            icon=folium.Icon(color="blue"),
+            tooltip="Uploaded Point"
+        ).add_to(m)
 
+        # Fit to bounds
         m.fit_bounds(bounds)
 
         # Render map
         st_folium(m, width=700, height=400)
 
-
     elif "selected_route" in st.session_state and st.session_state["selected_route"]:
         BLUE = "#3388ff"
+        # Route: expecting a single path as [[lon, lat], ...] or multi-path [[[lon,lat],...], ...]
         coords = st.session_state["selected_route"]
 
-        # Compute bounding box
+        # Compute bounding box and center
         bounds = set_bounds_route(coords)
         center = set_center(bounds)
 
         # Create map centered on the boundary center
         m = folium.Map(
             location=[center[0], center[1]],
-            zoom_start=set_zoom(bounds)-1
+            zoom_start=max(1, (set_zoom(bounds) or 8) - 1)
         )
 
-        # Draw the boundary
-        folium.PolyLine(
+        # Draw the route via geometry_to_folium
+        geometry_to_folium(
             coords,
+            feature_type="polyline",
             color=BLUE,
             weight=8,
             opacity=1
         ).add_to(m)
 
+        # Fit to bounds
         m.fit_bounds(bounds)
 
         # Render map
         st_folium(m, width=700, height=400)
 
-    
     elif "selected_boundary" in st.session_state and st.session_state["selected_boundary"]:
         BLUE = "#3388ff"
+        # Boundary: expecting a ring or rings in [lon, lat]
         coords = st.session_state["selected_boundary"]
 
-        # Compute bounding box
+        # Compute bounding box and center
         bounds = set_bounds_boundary(coords)
         center = set_center(bounds)
 
@@ -117,20 +125,23 @@ def review_information():
             zoom_start=set_zoom(bounds)
         )
 
-        # Draw the boundary as a polygon
-        folium.Polygon(
-            locations=coords,   # list of [lat, lon] points
+        # Draw the polygon via geometry_to_folium (handles holes via GeoJSON)
+        geometry_to_folium(
+            coords,
+            feature_type="polygon",
             color=BLUE,
             weight=3,
-            fill=True,         # or True if you want a filled polygon
-            opacity=1
+            opacity=1,
+            fill=True,
+            fill_color=BLUE,
+            fill_opacity=0.2
         ).add_to(m)
 
+        # Fit to bounds
         m.fit_bounds(bounds)
 
         # Render map
         st_folium(m, width=700, height=400)
-
 
     else:
         st.info("No location data available to display a map.")
@@ -224,12 +235,12 @@ def review_information():
 
     # Contact
     with st.expander("Contact", expanded=True):
-        st.markdown(f"**Name:** {st.session_state.get('awp_contact_name','—')}")
+        st.markdown(f"**Name:** {st.session_state.get('contact_name','—')}")
         col1, col2 = st.columns(2)
         with col1:
-            st.markdown(f"**Email:** {st.session_state.get('awp_contact_email','—')}")
+            st.markdown(f"**Email:** {st.session_state.get('contact_email','—')}")
         with col2:
-            st.markdown(f"**Phone:** {st.session_state.get('awp_contact_phone','—')}")
+            st.markdown(f"**Phone:** {st.session_state.get('contact_phone','—')}")
 
     # Web Links
     with st.expander("Web Links", expanded=True):
@@ -245,21 +256,16 @@ def review_information():
         col1.markdown(f"**Borough/Census Area:** {st.session_state.get('borough_string','')}")
         col2.markdown(f"**DOT&PF Region:** {st.session_state.get('region_string','')}")
 
-    # Routes
-    if st.session_state['selected_route'] or st.session_state['selected_boundary']:
-        with st.expander("Routes", expanded=True):
-            st.markdown(f"**Route IDs:** {st.session_state.get('route_ids','')}")
-            st.markdown(f"**Route Names:** {st.session_state.get('route_names','')}")
-            
-
+    
     # Impacted Communities
-    with st.expander("Impacted Communities", expanded=True):
-        impact_comm = st.session_state.get("impact_comm_names", "")
-        if isinstance(impact_comm, list):
-            impact_comm_display = ", ".join(str(item) for item in impact_comm) if impact_comm else ""
-        else:
-            impact_comm_display = impact_comm
-        st.markdown(f"**Communities:** {impact_comm_display}")
+    if st.session_state.get("impact_comm_names", ""):
+        with st.expander("Impacted Communities", expanded=True):
+            impact_comm = st.session_state.get("impact_comm_names", "")
+            if isinstance(impact_comm, list):
+                impact_comm_display = ", ".join(str(item) for item in impact_comm) if impact_comm else ""
+            else:
+                impact_comm_display = impact_comm
+            st.markdown(f"**Communities:** {impact_comm_display}")
 
     
     st.write("")

@@ -74,55 +74,48 @@ def init_session_state():
         st.session_state["all_widget_prefixes"] = set()
 
     # ======================================================
-    # DEFAULT
+    # DEFAULT & QUERY PARAMS
     # ======================================================
-    # Core keys used across the wizard. These are seeded once and then updated
-    # by page-level logic as the user progresses.
+
+    # Defaults
     defaults = {
-        "prev_aashto_id": None,
-        "prev_awp_name": None,
-        "prev_construction_year": None,
-        "form_new_continuing_state": "New",
-        "show_duplicate_dialog": False,
-        "duplicate_found": False,
-        "continue_w_duplicate": None,
-        "step": 1,
+        'version': None,
+        'set_year': None,
+        "loader_step": 1,
+        "manager_step": 1,
         "is_awp": False,
-        "selected_point": None,
-        "selected_route": None,
-        "selected_boundary": None,
-        'project_geometry': None,
-        'project_geometry_type': None,
-        'project_buffer': None,
-        "selected_bop": None,
-        "selected_eop": None,
-        "project_type": None,
-        "geo_option": None,
-        "info_option": None,
-        "aashto_id": "",
-        "project_name": "",
-        "project_description": "",
-        "project_category": None,
-        "details_complete": False,
-        "duplicate_confirmed": False,
-        "awp_dcml_mid_latitude": None,
-        "awp_dcml_mid_longitude": None,
-        "awp_dcml_bop_latitude": None,
-        "awp_dcml_bop_longitude": None,
-        "awp_dcml_eop_latitude": None,
-        "awp_dcml_eop_longitude": None,
-        "ti_guid": None,
-        'center': None
+        "apex_guid": None,
+        "awp_guid": None,
+        "ti_guid": None
     }
 
-    # Seed missing keys (do not overwrite user/session modifications)
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
+    # Read query params (new + old API)
+    if hasattr(st, "query_params"):
+        params = {k: str(v) for k, v in st.query_params.items()}
+    else:
+        raw = st.experimental_get_query_params()
+        params = {k: v[0] for k, v in raw.items() if v}
 
-    # Redundant-but-safe idempotent seeding (kept as-is)
-    for key, value in defaults.items():
-        st.session_state.setdefault(key, value)
+    # Keys that should be ints
+    int_keys = {"loader_step", "manager_step"}
+
+    def coerce(key, value):
+        """Coerce known numeric keys to int; otherwise return as-is."""
+        if value is None or value == "":
+            return None
+        if key in int_keys:
+            try:
+                return int(value)
+            except Exception:
+                # If parsing fails, fall back to default later
+                return None
+        return value
+
+    # Seed: priority = query param (with coercion) → default
+    for key, default in defaults.items():
+        if key not in st.session_state:
+            from_query = coerce(key, params.get(key))
+            st.session_state[key] = from_query if from_query is not None else default
 
     # -------------------------------------------------------------------------
     # DICTIONARIES
@@ -203,18 +196,8 @@ def init_session_state():
     for key, value in value_lists.items():
         st.session_state.setdefault(key, value)
 
-    # -------------------------------------------------------------------------
-    # URL PARAMETERS
-    # -------------------------------------------------------------------------
-    # Optional URL-driven state (e.g., deep links or versioning)
-    url_params = {
-        "guid": None,
-        "version": None
-    }
-    for key, value in url_params.items():
-        st.session_state.setdefault(key, value)
 
-
+    
 
     # -------------------------------------------------------------------------
     # AGOL URLS

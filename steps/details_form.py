@@ -563,7 +563,7 @@ def _render_original_form(is_awp: bool):
 
         if is_awp:
             ro_widget(
-                key="acontact_name",
+                key="contact_name",
                 label="Contact",
                 value=fmt_string(val(AWP_FIELDS['contact_name']))
             )

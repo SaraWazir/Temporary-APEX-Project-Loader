@@ -77,6 +77,10 @@ def add_small_geocoder(fmap, position: str = "topright", width_px: int = 120, fo
 
 
 
+# Make sure these are present somewhere in your module:
+import folium
+from branca.element import Element
+
 def geometry_to_folium(
     geom,
     *,
@@ -93,8 +97,10 @@ def geometry_to_folium(
     popup = None,
     # Marker styling
     icon = None,   # e.g., folium.Icon(color="blue"), applies to folium.Marker only
-    # NEW: Explicit feature hint to disambiguate list-of-points
-    feature_type = None  # "point" | "multipoint" | "line" | "linestring" | "polyline" | "polygon" | None(auto)
+    # Explicit feature hint to disambiguate list-of-points
+    feature_type = None,  # "point" | "multipoint" | "line" | "linestring" | "polyline" | "polygon" | None(auto)
+    hightlight = False,   # kept for backward compatibility; not used
+    suppress_focus_outline: bool = True,  # NEW: remove black focus box on selection
 ):
     """
     Convert ArcGIS-style or raw coordinate-array geometry into Folium layers.
@@ -115,12 +121,35 @@ def geometry_to_folium(
       - Assumes [lon, lat] in WGS84. Converts to [lat, lon] for Folium where required.
       - Polygons with holes are emitted as GeoJSON (Folium.Polygon can't represent holes).
       - Pass `feature_type` to explicitly interpret ambiguous lists (e.g., points-as-line).
-        Examples:
-          * feature_type="line"      -> [[lon,lat], [lon,lat], ...] drawn as PolyLine
-          * feature_type="point"     -> list of points drawn as markers (multipoint)
-          * feature_type="polygon"   -> [[lon,lat], ...] drawn as ring (will be closed if needed)
+      - Set `suppress_focus_outline=True` to remove the black focus box on selection/toggle.
     """
 
+    # ---------------- CSS Suppressor ----------------
+    _FOCUS_CSS = """
+    <style>
+      /* Remove black focus outline for Leaflet layers and controls */
+      .leaflet-container .leaflet-interactive:focus,
+      .leaflet-container .leaflet-control a:focus,
+      .leaflet-container .leaflet-control-layers label:focus,
+      .leaflet-container .leaflet-control-layers-toggle:focus {
+        outline: none !important;
+        box-shadow: none !important;
+      }
+    </style>
+    """
+
+    def _maybe_suppress_focus(layer):
+        if not suppress_focus_outline:
+            return layer
+        try:
+            # Attach CSS to map root; safe to call multiple times
+            layer.get_root().html.add_child(Element(_FOCUS_CSS))
+        except Exception:
+            # Non-fatal if root not available yet; once added to a Map it will apply
+            pass
+        return layer
+
+    # ---------------- Helpers ----------------
     def is_num_pair(p):
         return isinstance(p, (list, tuple)) and len(p) == 2 and all(isinstance(v, (int, float)) for v in p)
 
@@ -161,19 +190,18 @@ def geometry_to_folium(
                 layer.add_child(folium.Popup(popup))
             except Exception:
                 pass
-        return layer
+        return _maybe_suppress_focus(layer)
 
     def _marker(lat, lon):
-        # Apply icon if provided
         mk = folium.Marker([lat, lon], icon=icon if icon is not None else None)
         return _apply_common_bindings(mk)
 
     def _polyline(**kw):
+        # Note: keep interactive=True so tooltips/popups still work.
         layer = folium.PolyLine(**kw)
         return _apply_common_bindings(layer)
 
     def _polygon_simple(latlon, **_):
-        # Simple polygons (no holes). Used when not using GeoJson.
         layer = folium.Polygon(
             locations=latlon,
             color=color,
@@ -198,6 +226,8 @@ def geometry_to_folium(
                 "fill": fill,
                 "fillColor": (fill_color or color),
                 "fillOpacity": fill_opacity,
+                # Optional: add a class so CSS can target only these if needed
+                "className": "no-focus-outline"
             }
         layer = folium.GeoJson(gj_feature, style_function=_style_fn)
         return _apply_common_bindings(layer)
@@ -209,23 +239,18 @@ def geometry_to_folium(
     if isinstance(geom, list) and len(geom) > 0:
         first = geom[0]
 
-        # If a feature_type is provided, enforce it for list inputs
         if ft in ("point", "multipoint", "line", "linestring", "polyline", "polygon"):
 
-            # Explicit POINT/MULTIPOINT: draw markers (single or multiple)
             if ft in ("point", "multipoint") and is_num_pair(first):
                 if len(geom) == 1:
                     lon, lat = geom[0]
                     return _marker(lat, lon)
-                # Multiple points -> FeatureGroup of markers
                 fg = folium.FeatureGroup()
                 for lon, lat in (p for p in geom if is_num_pair(p)):
                     _marker(lat, lon).add_to(fg)
                 return _apply_common_bindings(fg)
 
-            # Explicit LINE: treat as single path (or multi-path if nested)
             if ft in ("line", "linestring", "polyline"):
-                # Single path form: [[lon,lat], ...]
                 if is_num_pair(first):
                     if len(geom) == 1:
                         lon, lat = geom[0]
@@ -237,7 +262,6 @@ def geometry_to_folium(
                         opacity=opacity,
                         dash_array=dash_array
                     )
-                # Multi-path form: [ [[lon,lat],...], [[lon,lat],...] ]
                 if isinstance(first, list) and len(first) > 0 and is_num_pair(first[0]):
                     fg = folium.FeatureGroup()
                     for part in geom:
@@ -256,27 +280,18 @@ def geometry_to_folium(
                             ).add_to(fg)
                     return _apply_common_bindings(fg)
 
-            # Explicit POLYGON: treat as ring(s)
             if ft == "polygon":
-                # Single ring form: [[lon,lat], ...]
                 if is_num_pair(first):
                     ring = ensure_closed(geom)
                     gj = polygon_geojson_from_rings([ring])
                     return _polygon_geojson(gj)
-                # Multi-ring form: [ [[lon,lat],...], [[lon,lat],...] ]
                 if isinstance(first, list) and len(first) > 0 and is_num_pair(first[0]):
                     rings = [ensure_closed(r) for r in geom if r]
                     gj = polygon_geojson_from_rings(rings)
                     return _polygon_geojson(gj)
 
-            # If feature_type was provided but input didn't match expected patterns,
-            # fall back to auto-detection below.
-
-        # ---------- AUTO-DETECTION (original behavior) ----------
-
-        # Case: Single path/ring or possible single coordinate [[lon,lat], ...]
+        # ---------- AUTO-DETECTION ----------
         if is_num_pair(first):
-            # If it's exactly one coordinate, render as Marker
             if len(geom) == 1:
                 lon, lat = geom[0]
                 return _marker(lat, lon)
@@ -294,15 +309,12 @@ def geometry_to_folium(
                     dash_array=dash_array
                 )
 
-        # Case: Multi-part [ [[lon,lat],...], [[lon,lat],...] ]
         if isinstance(first, list) and len(first) > 0 and is_num_pair(first[0]):
             first_is_closed = len(first) >= 4 and first[0] == first[-1]
             if first_is_closed:
-                # Treat as polygon with holes
                 gj = polygon_geojson_from_rings(geom)
                 return _polygon_geojson(gj)
             else:
-                # Multiple polylines -> FeatureGroup of separate lines
                 fg = folium.FeatureGroup()
                 for part in geom:
                     if not part:
@@ -320,7 +332,6 @@ def geometry_to_folium(
                         ).add_to(fg)
                 return _apply_common_bindings(fg)
 
-        # Otherwise treat as a collection of geometries (mixed)
         grp = folium.FeatureGroup()
         for g in geom:
             layer = geometry_to_folium(
@@ -334,33 +345,29 @@ def geometry_to_folium(
                 fill_opacity=fill_opacity,
                 tooltip=tooltip,
                 popup=popup,
-                icon=icon,  # propagate
-                feature_type=None  # do not propagate explicit type to mixed collections
+                icon=icon,
+                feature_type=None
             )
             layer.add_to(grp)
         return _apply_common_bindings(grp)
 
     # ---- DICT HANDLING (ArcGIS-style) ----
     if isinstance(geom, dict):
-        # POINT
         if "x" in geom and "y" in geom:
             return _marker(geom["y"], geom["x"])
 
-        # MULTIPOINT
         if "points" in geom:
             fg = folium.FeatureGroup()
             for x, y in (geom.get("points") or []):
                 _marker(y, x).add_to(fg)
             return _apply_common_bindings(fg)
 
-        # POLYLINE (multi-part supported)
         if "paths" in geom:
             paths = geom.get("paths") or []
             fg = folium.FeatureGroup()
             for path in paths:
                 if not path:
                     continue
-                # If a path is a single vertex, render as Marker
                 if len(path) == 1 and is_num_pair(path[0]):
                     x, y = path[0]
                     _marker(y, x).add_to(fg)
@@ -374,7 +381,6 @@ def geometry_to_folium(
                     ).add_to(fg)
             return _apply_common_bindings(fg)
 
-        # POLYGON (outer + holes via GeoJSON)
         if "rings" in geom:
             rings = geom.get("rings") or []
             if not rings:

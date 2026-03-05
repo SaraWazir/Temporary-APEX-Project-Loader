@@ -135,7 +135,7 @@ def draw_point(container):
     m = folium.Map(location=[64.0000, -152.0000], zoom_start=4)
 
     # Show previously saved points
-    if st.session_state.get("footprint_submitted") and st.session_state.get("selected_point"):
+    if st.session_state.get("project_geometry") and st.session_state.get("selected_point"):
         layer = geometry_to_folium(
             st.session_state['selected_point'],
             icon=folium.Icon(color="blue"),
@@ -1268,851 +1268,589 @@ def aashtoware_path(awp: dict, container) -> None:
 
 
 
-def impact_area(container):
+
+def select_route_and_points(container, key_prefix: str = ""):
     """
-    Display project geometries on a Folium map and allow the user to apply
-    a buffer (meters) to create the Traffic Impact Area.
-
-    Behavior:
-    - Automatically computes buffers on first render (or when geometry changes) using the default/current distance.
-    - Recomputes buffers when the distance input changes (on_change).
-
-    NOTE:
-    - Stored geometries in session are assumed to be in [lon, lat] order (WGS84).
-    - All map drawing now uses geometry_to_folium, which expects [lon, lat] and handles styling + lat/lon conversion internally.
+    One-step UI:
+      - Segmented control at top: 1. Select Route (default), 2. Set Start, 3. Set End
+      - Start/End disabled until a route is selected (soft-lock: enforced before widget render)
+      - When Select Route is active → map clicks select a route
+      - When Start/End active → map clicks snap endpoints
+      - Draw order: Impact Area → Routes → Project Geometry → Markers
+      - Always fit map to the impact area on each render
     """
 
-    st.markdown("<h5>SET THE TRAFFIC IMPACT AREA</h5>", unsafe_allow_html=True)
+    import math
+    import json  # for fingerprinting project geometry
+    import hashlib  # for fingerprinting project geometry
+    import streamlit as st
+    import folium
+    from streamlit_folium import st_folium
+
+    st.markdown("<h5>CREATE TRAFFIC IMPACT EVENT</h5>", unsafe_allow_html=True)
     st.caption(
-        "Examine the project geometry and refine the buffer distance as needed. "
-        "Adjust the distance until the displayed buffer forms a realistic and appropriate impact area for the project."
+        "Choose the route affected by the APEX project and specify the start and end points "
+        "for the impact. Once all values are set, select **Load** to add the traffic impact "
+        "to the list."
     )
 
-    with container:
-        geoms = st.session_state.get("project_geom")
-
-        if not geoms or not isinstance(geoms, (list, tuple)):
-            st.warning("No project geometry found.")
-            m = folium.Map(location=[63.5, -149.0], zoom_start=5)
-            st_folium(m, use_container_width=True, height=500)
-            return
-
-        # Stored data is already [lon, lat]; keep as-is.
-        # Normalize single point -> list of one point (NO ORDER SWAP)
-        if (
-            isinstance(geoms, (list, tuple))
-            and len(geoms) == 2
-            and all(isinstance(v, (int, float)) for v in geoms)
-        ):
-            geoms = [geoms]
-
-        # --- Session defaults / scaffolding
-        st.session_state.setdefault("tie_data", {})
-        prev_params = st.session_state["tie_data"].get("impact_buffer_params", {})
-        default_distance = float(prev_params.get("distance_m", 100.0))
-        st.session_state.setdefault("impact_buffer_distance_m", default_distance)
-
-        # --- Geometry fingerprint to detect changes (point/line/polygon)
-        def _geom_fingerprint(g):
-            try:
-                norm = []
-                for item in g:
-                    if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, (int, float)) for v in item):
-                        # point [lon, lat]
-                        norm.append((float(item[0]), float(item[1])))
-                    elif (
-                        isinstance(item, (list, tuple))
-                        and item
-                        and isinstance(item[0], (list, tuple))
-                        and len(item[0]) == 2
-                        and all(isinstance(v, (int, float)) for v in item[0])
-                    ):
-                        # line or polygon as [[lon, lat], ...]
-                        norm.append(tuple((float(p[0]), float(p[1])) for p in item))
-                    else:
-                        norm.append(("UNK",))
-                return hash(tuple(norm))
-            except Exception:
-                return None
-
-        current_geom_fp = _geom_fingerprint(geoms)
-        prev_geom_fp = st.session_state["tie_data"].get("impact_geom_fp")
-
-        # --- Single place to compute buffers and write to session
-        def _compute_and_save_buffers(distance_m: float):
-            # Split geoms by kind — inputs are [lon, lat]
-            points, lines, polys = [], [], []
-            for item in geoms:
-                if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, (int, float)) for v in item):
-                    # point [lon, lat]
-                    points.append([float(item[0]), float(item[1])])
-                elif (
-                    isinstance(item, (list, tuple))
-                    and item
-                    and isinstance(item[0], (list, tuple))
-                    and len(item[0]) == 2
-                    and all(isinstance(v, (int, float)) for v in item[0])
-                ):
-                    coords = [[float(p[0]), float(p[1])] for p in item]  # [[lon, lat], ...]
-                    is_closed = len(coords) >= 4 and coords[0] == coords[-1]
-                    if is_closed:
-                        polys.append(coords)
-                    else:
-                        lines.append(coords)
-
-            buffers = []
-            if distance_m > 0:
-                # create_buffers is expected to accept [lon, lat] and return [lon, lat]
-                if points:
-                    buffers += create_buffers(geometry_list=points, geom_type="point",   distance_m=distance_m)
-                if lines:
-                    buffers += create_buffers(geometry_list=lines,  geom_type="line",    distance_m=distance_m)
-                if polys:
-                    buffers += create_buffers(geometry_list=polys,  geom_type="polygon", distance_m=distance_m)
-
-            st.session_state["tie_data"]["impact_buffers"] = buffers
-            st.session_state["tie_data"]["impact_buffer_params"] = {"distance_m": distance_m}
-            st.session_state["tie_data"]["impact_geom_fp"] = current_geom_fp
-            
-            #Store Impacted Area Geometry
-            st.session_state["selected_impact_area"] = buffers
-
-        # --- Callback for the number_input (user interaction)
-        def _on_distance_change():
-            distance_m = float(st.session_state["impact_buffer_distance_m"])
-            _compute_and_save_buffers(distance_m)
-
-        # --- Distance input (this will NOT auto-trigger on first render)
-        st.number_input(
-            "Impact Area Dist (meters)",
-            min_value=0.0,
-            max_value=50000.0,
-            step=50.0,
-            key="impact_buffer_distance_m",
-            on_change=_on_distance_change,
-            help="Adjust the distance to refine the impact area around the project geometry.",
-        )
-
-        # --- Ensure buffers exist on first render or when geometry changed
-        current_distance = float(st.session_state["impact_buffer_distance_m"])
-        saved = st.session_state["tie_data"].get("impact_buffer_params", {})
-        saved_distance = float(saved.get("distance_m", float("nan")))
-        buffers_missing = "impact_buffers" not in st.session_state["tie_data"]
-        geom_changed = (prev_geom_fp is None) or (prev_geom_fp != current_geom_fp)
-        distance_mismatch = (saved_distance != saved_distance) or (abs(saved_distance - current_distance) > 1e-9)  # NaN-safe or drift
-
-        if buffers_missing or geom_changed or distance_mismatch:
-            _compute_and_save_buffers(current_distance)
-
-        # ---------------------------
-        # Map setup & drawing
-        # ---------------------------
-        m = folium.Map(location=[63.5, -149.0], zoom_start=5)
-        all_lats, all_lons = [], []
-
-        # Optional bound utilities
-        set_bounds_point = None
-        set_bounds_line = None
-        set_bounds_polygon = None
-        try:
-            from util.geometry_util import set_bounds_point as _sbp
-            set_bounds_point = _sbp
-        except Exception:
-            pass
-        try:
-            from util.geometry_util import set_bounds_line as _sbl
-            set_bounds_line = _sbl
-        except Exception:
-            pass
-        try:
-            from util.geometry_util import set_bounds_polygon as _sbpoly
-            set_bounds_polygon = _sbpoly
-        except Exception:
-            pass
-
-        # Bounds helper for [lon, lat] sequences
-        def _extend_global_bounds_from_lonlat(seq_lonlat):
-            for lon, lat in seq_lonlat:
-                all_lats.append(float(lat))
-                all_lons.append(float(lon))
-
-        # ---------------------------
-        # Draw original geometry using geometry_to_folium
-        # ---------------------------
-        try:
-            for item in geoms:
-                # POINT: [lon, lat]
-                if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, (int, float)) for v in item):
-                    lon, lat = float(item[0]), float(item[1])
-                    # Use geometry_to_folium (expects [lon, lat]) — pass as single-element list
-                    layer = geometry_to_folium(
-                        [[lon, lat]],
-                        tooltip="Project Point",
-                        icon=folium.Icon(color="blue"),
-                        feature_type = 'point'
-                    )
-                    layer.add_to(m)
-
-                    # Bounds: helpers expect [lat, lon]; convert or fallback
-                    if set_bounds_point:
-                        try:
-                            b = set_bounds_point([[lat, lon]])
-                            _extend_global_bounds_from_lonlat([[b[0][1], b[0][0]], [b[1][1], b[1][0]]])  # convert back to lonlat for accumulation
-                        except Exception:
-                            _extend_global_bounds_from_lonlat([[lon, lat]])
-                    else:
-                        _extend_global_bounds_from_lonlat([[lon, lat]])
-
-                # LINE or POLYGON: [[lon, lat], ...]
-                elif (
-                    isinstance(item, (list, tuple))
-                    and item
-                    and isinstance(item[0], (list, tuple))
-                    and len(item[0]) == 2
-                    and all(isinstance(v, (int, float)) for v in item[0])
-                ):
-                    coords_lonlat = [[float(p[0]), float(p[1])] for p in item]
-                    is_closed = len(coords_lonlat) >= 4 and coords_lonlat[0] == coords_lonlat[-1]
-
-                    if is_closed:
-                        # Polygon styling via geometry_to_folium (GeoJSON)
-                        layer = geometry_to_folium(
-                            coords_lonlat,
-                            color="orange",
-                            weight=3,
-                            fill=True,
-                            fill_opacity=0.30,
-                            feature_type = 'polygon'
-                        )
-                        layer.add_to(m)
-
-                        # Bounds
-                        if set_bounds_polygon:
-                            try:
-                                # helpers expect [lat, lon]
-                                coords_latlon = [[c[1], c[0]] for c in coords_lonlat]
-                                b = set_bounds_polygon(coords_latlon)
-                                _extend_global_bounds_from_lonlat([[b[0][1], b[0][0]], [b[1][1], b[1][0]]])
-                            except Exception:
-                                _extend_global_bounds_from_lonlat(coords_lonlat)
-                        else:
-                            _extend_global_bounds_from_lonlat(coords_lonlat)
-                    else:
-                        # Polyline styling via geometry_to_folium
-                        layer = geometry_to_folium(
-                            coords_lonlat,
-                            color="blue",
-                            weight=4,
-                            opacity=1.0,
-                            feature_type = 'line'
-                        )
-                        layer.add_to(m)
-
-                        # Bounds
-                        if set_bounds_line:
-                            try:
-                                coords_latlon = [[c[1], c[0]] for c in coords_lonlat]
-                                b = set_bounds_line(coords_latlon)
-                                _extend_global_bounds_from_lonlat([[b[0][1], b[0][0]], [b[1][1], b[1][0]]])
-                            except Exception:
-                                _extend_global_bounds_from_lonlat(coords_lonlat)
-                        else:
-                            _extend_global_bounds_from_lonlat(coords_lonlat)
-                else:
-                    st.warning("Skipped an unrecognized geometry item.")
-        except Exception as e:
-            st.error(f"Unable to draw geometry: {e}")
-            m = folium.Map(location=[63.5, -149.0], zoom_start=5)
-
-        # ---------------------------
-        # Draw buffers (already [lon, lat]) using geometry_to_folium
-        # ---------------------------
-        buffers = st.session_state.get("tie_data", {}).get("impact_buffers", []) or []
-        for ring_lonlat in buffers:
-            try:
-                layer = geometry_to_folium(
-                    ring_lonlat,
-                    color="#e64a19",
-                    weight=2,
-                    fill=True,
-                    fill_color="#ff7043",
-                    fill_opacity=0.35,
-                    feature_type = 'polygon'
-                )
-                layer.add_to(m)
-
-                # Bounds for buffers
-                if set_bounds_polygon:
-                    try:
-                        ring_latlon = [[c[1], c[0]] for c in ring_lonlat]
-                        b = set_bounds_polygon(ring_latlon)
-                        _extend_global_bounds_from_lonlat([[b[0][1], b[0][0]], [b[1][1], b[1][0]]])
-                    except Exception:
-                        _extend_global_bounds_from_lonlat(ring_lonlat)
-                else:
-                    _extend_global_bounds_from_lonlat(ring_lonlat)
-            except Exception as e:
-                st.warning(f"Skipped drawing a buffer ring due to error: {e}")
-
-        # Fit bounds
-        if all_lats and all_lons:
-            bounds = [[min(all_lats), min(all_lons)], [max(all_lats), max(all_lons)]]
-            m.fit_bounds(bounds)
-
-        st_folium(m, use_container_width=True, height=500)
-
-
-
-def select_impacted_route(container):
-    """
-    Select the impacted route by clicking near it.
-
-    Guarantees:
-    - ALL geometries handled internally as [lon, lat].
-    - ALL geometry displayed on the map uses geometry_to_folium.
-    - Map always fits to the impact area (buffers) extent.
-    - Saves selection to st.session_state["tie_data"]:
-        - selected_route_id
-        - selected_route_name
-        - selected_route_geom  (raw lon/lat list, NOT GeoJSON)
-    """
-    import math
-
     # ---------------------------
-    # REQUIRED HELPER 1 — Bounds
+    # Helpers
     # ---------------------------
-    def _compute_bounds_from_rings(rings_latlon):
-        """Return (min_lat, min_lon, max_lat, max_lon) for a list of rings in [lat, lon]."""
-        min_lat = min_lon = float("inf")
-        max_lat = max_lon = float("-inf")
-        for ring in rings_latlon or []:
-            for lat, lon in ring:
-                latf, lonf = float(lat), float(lon)
-                min_lat = min(min_lat, latf)
-                min_lon = min(min_lon, lonf)
-                max_lat = max(max_lat, latf)
-                max_lon = max(max_lon, lonf)
-        return (min_lat, min_lon, max_lat, max_lon)
+    def _get_last_click():
+        """Safe getter for the last click from the folium component."""
+        try:
+            return (st.session_state.get(map_key) or {}).get("last_clicked")
+        except Exception:
+            return None
 
-    # -------------------------------------------------------------
-    # REQUIRED HELPER 2 — Click‑to‑line distance (always lon/lat)
-    # -------------------------------------------------------------
+    def _ensure_ti_dict():
+        ti_key = f"{key_prefix}traffic_impact"
+        if ti_key not in st.session_state or not isinstance(st.session_state[ti_key], dict):
+            st.session_state[ti_key] = {
+                "route_id": None,
+                "route_name": None,
+                "route_geom": None,
+                "start_point": None,
+                "end_point": None,
+            }
+        return ti_key
+
     def _line_distance_meters(click_lonlat, line_lonlat):
-        """
-        Distance from click to a polyline. Uses Shapely+PyProj if available (meters),
-        otherwise an equirectangular approximation in meters. All geometry is [lon, lat].
-        """
         try:
             from shapely.geometry import LineString, Point
             from shapely.ops import transform as shp_transform
-            try:
-                from pyproj import Transformer
-                _to_merc = Transformer.from_crs(4326, 3857, always_xy=True).transform
-            except Exception:
-                _to_merc = None
+            from pyproj import Transformer
+            to_merc = Transformer.from_crs(4326, 3857, always_xy=True).transform
+            ln = shp_transform(to_merc, LineString(line_lonlat))
+            pt = shp_transform(to_merc, Point(click_lonlat))
+            return pt.distance(ln)
         except Exception:
-            LineString = None
-            Point = None
-            _to_merc = None
+            lon, lat = click_lonlat
+            deg_to_m_lat = 111_320.0
+            deg_to_m_lon = 111_320.0 * math.cos(math.radians(lat))
 
-        lon, lat = click_lonlat
+            def _segdist(p, a, b):
+                (x, y), (x1, y1), (x2, y2) = p, a, b
+                dx, dy = (x2 - x1), (y2 - y1)
+                if dx == 0 and dy == 0:
+                    return math.hypot((x - x1) * deg_to_m_lon, (y - y1) * deg_to_m_lat)
+                t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy)))
+                px, py = x1 + t * dx, y1 + t * dy
+                return math.hypot((x - px) * deg_to_m_lon, (y - py) * deg_to_m_lat)
 
-        if LineString and Point and _to_merc:
-            ln_m = shp_transform(_to_merc, LineString(line_lonlat))
-            pt_m = shp_transform(_to_merc, Point(lon, lat))
-            return pt_m.distance(ln_m)
+            best = float("inf")
+            for i in range(len(line_lonlat) - 1):
+                best = min(best, _segdist((lon, lat), line_lonlat[i], line_lonlat[i + 1]))
+            return best
 
-        # fallback
-        deg_to_m_lat = 111_320.0
-        deg_to_m_lon = 111_320.0 * math.cos(math.radians(lat))
+    def _haversine(lon1, lat1, lon2, lat2):
+        R = 6371000.0
+        phi1, phi2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlmb = math.radians(lon2 - lon1)
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2) ** 2
+        return 2 * R * math.asin(math.sqrt(a))
 
-        def _segdist(p, a, b):
-            (x, y) = p
-            (x1, y1) = a
-            (x2, y2) = b
-            dx = x2 - x1
-            dy = y2 - y1
-            if dx == 0 and dy == 0:
-                return math.hypot((x - x1) * deg_to_m_lon, (y - y1) * deg_to_m_lat)
-            t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / (dx*dx + dy*dy)))
-            px = x1 + t * dx
-            py = y1 + t * dy
-            return math.hypot((x - px) * deg_to_m_lon, (y - py) * deg_to_m_lat)
-
-        p = (lon, lat)
-        best = float("inf")
+    def _precompute_metrics(line_lonlat):
+        lengths = []
         for i in range(len(line_lonlat) - 1):
-            best = min(best, _segdist(p, line_lonlat[i], line_lonlat[i+1]))
-        return best
+            lon1, lat1 = line_lonlat[i]
+            lon2, lat2 = line_lonlat[i + 1]
+            lengths.append(_haversine(lon1, lat1, lon2, lat2))
+        cum = [0.0]
+        for L in lengths:
+            cum.append(cum[-1] + L)
+        return {"lengths": lengths, "cum": cum}
+
+    def _snap(clicked, line_lonlat, metrics):
+        cx, cy = float(clicked["lng"]), float(clicked["lat"])
+        best = (float("inf"), None, None, None, None)
+        for i in range(len(line_lonlat) - 1):
+            ax, ay = line_lonlat[i]
+            bx, by = line_lonlat[i + 1]
+            dx, dy = (bx - ax), (by - ay)
+            if dx == 0 and dy == 0:
+                continue
+            t = ((cx - ax) * dx + (cy - ay) * dy) / (dx * dx + dy * dy)
+            t = max(0.0, min(1.0, t))
+            px, py = ax + t * dx, ay + t * dy
+            dist = math.hypot(cx - px, cy - py)
+            if dist < best[0]:
+                chain = metrics["cum"][i] + metrics["lengths"][i] * t
+                best = (dist, px, py, i, chain)
+        _, px, py, seg, chain = best
+        return {
+            "lat": py,
+            "lng": px,
+            "lonlat": [px, py],
+            "seg_idx": seg,
+            "chainage_m": chain,
+        }
+
+    def _fingerprint(obj) -> str:
+        try:
+            return hashlib.md5(
+                json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            return f"{type(obj).__name__}:{str(obj)[:200]}"
 
     # ---------------------------
-    # UI AND MAIN LOGIC
+    # Session keys
     # ---------------------------
-    st.markdown("<h5>SELECT THE IMPACTED ROUTE</h4>", unsafe_allow_html=True)
-    st.caption(
-        "Using the impact area buffer, the app finds candidate routes. "
-        "Click near a route on the map to select it and highlight in red. "
-        "The map stays zoomed to the buffer extent."
+    fit_req_key = f"{key_prefix}fit_bounds_request"   # (kept for compatibility; not used)
+    fit_geom_key = f"{key_prefix}fit_bounds_geom"
+
+    cand_key = f"{key_prefix}impact_route_candidates"
+    map_key = f"{key_prefix}route_map"
+
+    # IMPORTANT: bump widget key version to bust Streamlit's cached widget state
+    seg_key_legacy = f"{key_prefix}place_mode"          # old key (unnumbered labels lived here)
+    seg_key = f"{key_prefix}place_mode_v2"              # new key (numbered labels only)
+
+    sel_id_key = f"{key_prefix}selected_route_id"
+    sel_name_key = f"{key_prefix}selected_route_name"
+    sel_geom_key = f"{key_prefix}selected_route_geom"
+    tol_key = f"{key_prefix}route_click_out_of_tolerance"
+
+    # change-detection signatures
+    proj_geom_sig_key = f"{key_prefix}__proj_geom_sig"
+    proj_type_sig_key = f"{key_prefix}__proj_geom_type_sig"
+    reset_notice_key = f"{key_prefix}__route_reset_notice"
+
+    # force mode reset flag (used by CLEAR handler)
+    force_select_route_flag = f"{key_prefix}__force_select_route"
+
+    ti_key = _ensure_ti_dict()
+
+    # Impact buffers (per-tab override or global)
+    buffers = st.session_state.get(fit_geom_key) or st.session_state.get("impact_area") or []
+
+    # Project geometry/type for change detection
+    project_geom = (
+        st.session_state.get("project_geometry") or st.session_state.get("project_geom")
+    )
+    project_geom_type = (
+        st.session_state.get("project_geometry_type")
+        or st.session_state.get("project_geom_type")
+        or ""
+    ).lower()
+
+    # ---------------------------
+    # Reset route/points if project geometry or type changed
+    # (safe: this occurs BEFORE the widget is rendered)
+    # ---------------------------
+    curr_geom_sig = _fingerprint(project_geom)
+    curr_type_sig = _fingerprint(project_geom_type)
+
+    prev_geom_sig = st.session_state.get(proj_geom_sig_key)
+    prev_type_sig = st.session_state.get(proj_type_sig_key)
+
+    if prev_geom_sig is None and prev_type_sig is None:
+        st.session_state[proj_geom_sig_key] = curr_geom_sig
+        st.session_state[proj_type_sig_key] = curr_type_sig
+    else:
+        if curr_geom_sig != prev_geom_sig or curr_type_sig != prev_type_sig:
+            st.session_state.pop(sel_id_key, None)
+            st.session_state.pop(sel_name_key, None)
+            st.session_state.pop(sel_geom_key, None)
+            st.session_state.pop(f"{key_prefix}selected_start_point", None)
+            st.session_state.pop(f"{key_prefix}selected_end_point", None)
+
+            st.session_state[ti_key].update(
+                {
+                    "route_id": None,
+                    "route_name": None,
+                    "route_geom": None,
+                    "start_point": None,
+                    "end_point": None,
+                }
+            )
+
+            st.session_state.pop(tol_key, None)
+            try:
+                st.session_state.setdefault(map_key, {})
+                st.session_state[map_key]["last_clicked"] = None
+            except Exception:
+                pass
+
+            st.session_state[proj_geom_sig_key] = curr_geom_sig
+            st.session_state[proj_type_sig_key] = curr_type_sig
+            st.session_state[reset_notice_key] = True
+
+    # ---------------------------
+    # Candidate routes
+    # ---------------------------
+    try:
+        results = query_routes_within_buffer(
+            buffers,
+            fields=("Route_ID", "Route_Name"),
+            include_geometry=True,
+        ) or []
+        st.session_state[cand_key] = results
+    except Exception:
+        results = st.session_state.get(cand_key, []) or []
+
+    id_to_name, id_to_geom = {}, {}
+    for r in results:
+        attrs = r.get("attributes") or {}
+        rid = attrs.get("Route_ID")
+        geom = r.get("geometry") or []
+        if rid and geom:
+            id_to_name[rid] = attrs.get("Route_Name")
+            id_to_geom[rid] = geom
+
+    selected_id = st.session_state.get(sel_id_key)
+    selected_geom = st.session_state.get(sel_geom_key)
+
+    # =======================================================
+    # Segmented Control (TOP) — numbered options only
+    # =======================================================
+    # One-time cleanup: drop the legacy widget value if it exists
+    if seg_key_legacy in st.session_state:
+        st.session_state.pop(seg_key_legacy, None)
+
+    OPTIONS = ["1. Select Route", "2. Set Start", "3. Set End"]
+
+    # Determine if start/end allowed
+    disabled_start_end = selected_id is None
+
+    # Default if missing/invalid
+    curr = st.session_state.get(seg_key)
+    if curr not in OPTIONS:
+        st.session_state[seg_key] = "1. Select Route"
+        curr = "1. Select Route"
+
+    # Soft-lock if no route chosen yet
+    if disabled_start_end and curr in ("2. Set Start", "3. Set End"):
+        st.session_state[seg_key] = "1. Select Route"
+        curr = "1. Select Route"
+
+    # Render segmented control (key changed to v2 to bust cache)
+    place_mode = st.segmented_control(
+        "Complete Steps",
+        options=OPTIONS,
+        key=seg_key,
+        width="stretch",
     )
 
-    with container:
-        tie_data = st.session_state.setdefault("tie_data", {})
-        buffers = tie_data.get("impact_buffers") or []   # list of rings, each [[lon,lat], ...]
+    # ---------------------------
+    # Route fields (READ-ONLY)
+    # ---------------------------
+    col1, col2 = st.columns(2)
+    with col1:
+        ro_widget(f"{key_prefix}route_id_ro", "Route ID", fmt_string(selected_id or ""))
+    with col2:
+        ro_widget(
+            f"{key_prefix}route_name_ro",
+            "Route Name",
+            fmt_string(st.session_state.get(sel_name_key, "")),
+        )
 
-        if not buffers:
-            st.warning("No impact area buffer found. Please create a buffer in the previous step.")
-            m = folium.Map(location=[63.5, -149], zoom_start=5)
-            st_folium(m, use_container_width=True, height=500,
-                      key="route_map", returned_objects=["last_clicked"])
-            return
+    # ---------------------------
+    # Map click for ROUTE SELECTION
+    # ---------------------------
+    last_click = _get_last_click()
 
-        # ------------------------------------------
-        # 1) Query candidate routes (geometry = lon/lat)
-        # ------------------------------------------
+    if last_click and place_mode == "1. Select Route" and id_to_geom:
         try:
-            results = query_routes_within_buffer(
-                buffers,
-                fields=("Route_ID", "Route_Name"),
-                include_geometry=True
-            ) or []
-            tie_data["impact_route_candidates"] = results
-        except Exception:
-            results = tie_data.get("impact_route_candidates", []) or []
+            click_lon, click_lat = float(last_click["lng"]), float(last_click["lat"])
+            nearest_id, nearest_dist = None, float("inf")
 
-        id_field = "Route_ID"
-        name_field = "Route_Name"
+            for rid, geom in id_to_geom.items():
+                d = _line_distance_meters((click_lon, click_lat), geom)
+                if d < nearest_dist:
+                    nearest_dist, nearest_id = d, rid
 
-        id_to_name = {}
-        id_to_geom = {}
-        for r in results:
-            attrs = r.get("attributes") or {}
-            geom = r.get("geometry") or []   # ALWAYS [[lon,lat],...]
-            rid = attrs.get(id_field)
-            if rid and geom:
-                id_to_name[rid] = attrs.get(name_field)
-                id_to_geom[rid] = geom
+            if nearest_id and nearest_dist <= 100:
+                prev_id = st.session_state.get(sel_id_key)
 
-        # ------------------------------------------
-        # 2) CLICK HANDLING → nearest route selection
-        # ------------------------------------------
-        selected_id = tie_data.get("selected_route_id")
-        map_state = st.session_state.get("route_map") or {}
-        last_clicked = map_state.get("last_clicked")
+                # If changing to a different route, clear start/end points
+                if prev_id != nearest_id:
+                    st.session_state.pop(f"{key_prefix}selected_start_point", None)
+                    st.session_state.pop(f"{key_prefix}selected_end_point", None)
+                    st.session_state[ti_key]["start_point"] = None
+                    st.session_state[ti_key]["end_point"] = None
 
-        if last_clicked and id_to_geom:
-            try:
-                click_lat = float(last_clicked["lat"])
-                click_lon = float(last_clicked["lng"])
+                # Update the selected route
+                st.session_state[sel_id_key] = nearest_id
+                st.session_state[sel_name_key] = id_to_name.get(nearest_id)
+                st.session_state[sel_geom_key] = id_to_geom.get(nearest_id)
+                st.session_state[ti_key].update(
+                    {
+                        "route_id": nearest_id,
+                        "route_name": st.session_state[sel_name_key],
+                        "route_geom": st.session_state[sel_geom_key],
+                    }
+                )
 
-                nearest_id = None
-                nearest_dist = float("inf")
-
-                for rid, geom in id_to_geom.items():
-                    d = _line_distance_meters((click_lon, click_lat), geom)
-                    if d < nearest_dist:
-                        nearest_dist = d
-                        nearest_id = rid
-
-                # If within 100m → select it
-                if nearest_id and nearest_dist <= 100:
-                    if nearest_id != selected_id:
-                        tie_data["selected_route_id"] = nearest_id
-                        tie_data["selected_route_name"] = id_to_name.get(nearest_id)
-                        tie_data["selected_route_geom"] = id_to_geom.get(nearest_id)  # raw lon/lat list
-                        selected_id = nearest_id
-                else:
-                    tie_data["route_click_out_of_tolerance"] = True
-
-            finally:
-                # clear click event
+                # Clear last click and refresh
                 try:
-                    st.session_state["route_map"]["last_clicked"] = None
+                    st.session_state.setdefault(map_key, {})
+                    st.session_state[map_key]["last_clicked"] = None
                 except Exception:
                     pass
+                st.rerun()
+            else:
+                st.session_state[tol_key] = True
+        finally:
+            try:
+                st.session_state.setdefault(map_key, {})
+                st.session_state[map_key]["last_clicked"] = None
+            except Exception:
+                pass
 
-        # ------------------------------------------
-        # 3) Read‑only fields
-        # ------------------------------------------
-        col1, col2 = st.columns(2)
-        with col1:
-            ro_widget("route_id_ro", "Route ID",
-                      fmt_string(tie_data.get("selected_route_id","")))
-        with col2:
-            ro_widget("route_name_ro", "Route Name",
-                      fmt_string(tie_data.get("selected_route_name","")))
+    # ---------------------------
+    # Map click for ENDPOINT SNAPPING
+    # ---------------------------
+    last_click = _get_last_click()
 
-        # ------------------------------------------
-        # 4) Build map and draw EVERYTHING via geometry_to_folium
-        #    (All inputs to geometry_to_folium are lon/lat)
-        # ------------------------------------------
-        m = folium.Map(location=[63.5, -149], zoom_start=5, control_scale=True)
+    if last_click and selected_geom and place_mode in ("2. Set Start", "3. Set End"):
+        try:
+            metrics = _precompute_metrics(selected_geom)
+            snapped = _snap(last_click, selected_geom, metrics)
+            if place_mode == "2. Set Start":
+                st.session_state[ti_key]["start_point"] = snapped
+                st.session_state[f"{key_prefix}selected_start_point"] = snapped
+            elif place_mode == "3. Set End":
+                st.session_state[ti_key]["end_point"] = snapped
+                st.session_state[f"{key_prefix}selected_end_point"] = snapped
+        finally:
+            try:
+                st.session_state.setdefault(map_key, {})
+                st.session_state[map_key]["last_clicked"] = None
+            except Exception:
+                pass
 
-        # Draw buffers (impact area)
+    # ------------------------------------------------------
+    # ALWAYS-FIT: compute bounds against the impact area
+    # ------------------------------------------------------
+    # Use per-tab fit geometry if provided; otherwise fall back to global impact_area.
+    target_geom_for_fit = st.session_state.get(fit_geom_key) or (st.session_state.get("impact_area") or [])
+    fit_bounds_value = None
+    if target_geom_for_fit:
+        try:
+            # Use your existing helper; pass geometry as-is (no normalization).
+            fit_bounds_value = set_bounds_boundary(target_geom_for_fit)
+        except Exception:
+            fit_bounds_value = None
+
+    # ---------------------------
+    # Build map
+    # ---------------------------
+    m = folium.Map(location=[63.5, -149], zoom_start=5, control_scale=True)
+
+    # Impact Area
+    if buffers:
         for ring_lonlat in buffers:
             geometry_to_folium(
-                ring_lonlat,    # lon/lat
+                ring_lonlat,
                 color="#e64a19",
                 weight=2,
                 fill=True,
                 fill_color="#ff7043",
-                fill_opacity=0.35,
-                feature_type = 'polygon'
+                fill_opacity=0.30,
+                feature_type="polygon",
             ).add_to(m)
 
-        # 👉 Fit to the IMPACT AREA ONLY (buffers)
-        # Convert ring(s) lon/lat -> lat/lon for the bounds helper
-        buffer_rings_latlon = []
-        for ring_lonlat in buffers:
-            buffer_rings_latlon.append([[lat, lon] for lon, lat in ring_lonlat])
-
-        if buffer_rings_latlon:
-            min_lat, min_lon, max_lat, max_lon = _compute_bounds_from_rings(buffer_rings_latlon)
-            m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
-
-        # Draw route candidates (does NOT affect fit)
+    # ---------------------------
+    # Routes (with hover highlight in Select Route mode)
+    # ---------------------------
+    if place_mode == "1. Select Route":
+        # Use GeoJson so we can attach a highlight_function for hover.
+        # We intentionally do this only in discovery mode; in placement mode we show only the selected route (below).
         for r in results:
             attrs = r.get("attributes") or {}
-            rid = attrs.get(id_field)
+            rid = attrs.get("Route_ID")
             geom = r.get("geometry") or []
-
             if not rid or not geom:
                 continue
 
-            is_selected = (rid == selected_id)
-            color = "#e53935" if is_selected else "#1976d2"
-            weight = 6 if is_selected else 3
+            # Build a GeoJSON LineString feature (coords are [lon,lat] as you already store)
+            feature = {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": geom},
+                "properties": {
+                    "Route_ID": rid,
+                    "Route_Name": attrs.get("Route_Name"),
+                },
+            }
 
-            tooltip_text = (
-                f"Route ID: {attrs.get(id_field)}<br>"
-                f"Route Name: {attrs.get(name_field)}"
-            )
+            # Freeze per-route base style (avoid late-binding issues in lambdas)
+            base_color = "#e53935" if rid == selected_id else "#6c757d"
+            base_weight = 6 if rid == selected_id else 3
+            base_opacity = 1.0 if rid == selected_id else 0.75
 
-            geometry_to_folium(
-                geom,       # lon/lat
-                color=color,
-                weight=weight,
-                opacity=1.0 if is_selected else 0.6,
-                tooltip=tooltip_text,
-                feature_type = 'line'
+            def _style_factory(color, weight, opacity):
+                return lambda f: {"color": color, "weight": weight, "opacity": opacity}
+
+            # Highlight: on hover, always show red + weight 6
+            highlight = lambda f: {"color": "#e53935", "weight": 6, "opacity": 1.0}
+
+            folium.GeoJson(
+                data=feature,
+                style_function=_style_factory(base_color, base_weight, base_opacity),
+                highlight_function=highlight,
+                tooltip=folium.Tooltip(f"Route ID: {rid}<br>Route Name: {attrs.get('Route_Name')}"),
+                # Keep it in the default pane so z-order matches your other layers
+                name=f"route_{rid}",
             ).add_to(m)
-
-        # render map
-        st_folium(
-            m,
-            use_container_width=True,
-            height=520,
-            key="route_map",
-            returned_objects=["last_clicked"],
-        )
-
-        if tie_data.get("route_click_out_of_tolerance"):
-            st.info("Click closer to a route (within ~100m).")
-            tie_data.pop("route_click_out_of_tolerance", None)
-
-
-
-def select_route_endpoints(container):
-    """
-    Shows the buffer and ONLY the selected route (from select_impacted_route),
-    then lets the user place a Start (green) and End (red) point snapped to that route.
-
-    Contract:
-      - All geometries are [lon, lat] internally.
-      - Everything drawn on the map goes through geometry_to_folium.
-      - Saves selection into st.session_state["tie_data"]:
-          * selected_start_point
-          * selected_end_point
-        Each contains:
-          {
-            "lat": <float>, "lng": <float>,
-            "lonlat": [lon, lat],
-            "line_idx": int, "seg_idx": int, "t": float,
-            "chainage_m": float
-          }
-    """
-    import math
-
-    st.markdown("<h5>DROP START & END POINTS FOR TRAFFIC IMPACT</h5>", unsafe_allow_html=True)
-    st.caption(
-        "Select the beginning and end points for the traffic impact. Choose either **Start Point** or **End Point**, "
-        "then click on the map near the route—your point will automatically snap to the impacted line."
-    )
-
-    # ---------------------------
-    # Helper: bounds (expects [lat, lon])
-    # ---------------------------
-    def _compute_bounds_from_rings(rings_latlon):
-        """Return (min_lat, min_lon, max_lat, max_lon) for a list of rings in [lat, lon]."""
-        min_lat = min_lon = float("inf")
-        max_lat = max_lon = float("-inf")
-        for ring in rings_latlon or []:
-            for lat, lon in ring:
-                latf, lonf = float(lat), float(lon)
-                min_lat = min(min_lat, latf)
-                min_lon = min(min_lon, lonf)
-                max_lat = max(max_lat, latf)
-                max_lon = max(max_lon, lonf)
-        return (min_lat, min_lon, max_lat, max_lon)
-
-    # ---------------------------
-    # Distance / snapping helpers (lon/lat aware)
-    # ---------------------------
-    def _haversine_m_lonlat(lon1, lat1, lon2, lat2):
-        """Great-circle distance between two points (lon/lat) in meters."""
-        R = 6371000.0
-        phi1 = math.radians(lat1)
-        phi2 = math.radians(lat2)
-        dphi = math.radians(lat2 - lat1)
-        dlambda = math.radians(lon2 - lon1)
-        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-        return 2 * R * math.asin(math.sqrt(a))
-
-    def _precompute_line_metrics_lonlat(lines_lonlat):
-        """
-        For each line-part (list of [lon, lat]), compute per-segment lengths and cumulative distances (meters).
-        Returns: [{ 'lengths_m': [...], 'cum_m': [0, ...] }, ...]
-        """
-        metrics = []
-        for line in lines_lonlat:
-            lengths = []
-            for i in range(len(line) - 1):
-                lon1, lat1 = line[i]
-                lon2, lat2 = line[i + 1]
-                lengths.append(_haversine_m_lonlat(lon1, lat1, lon2, lat2))
-            cum = [0.0]
-            for L in lengths:
-                cum.append(cum[-1] + L)
-            metrics.append({"lengths_m": lengths, "cum_m": cum})
-        return metrics
-
-    def _project_to_segment_lonlat(px, py, ax, ay, bx, by):
-        """
-        Project point P(px,py) onto segment A(ax,ay)->B(bx,by) in lon/lat degrees (local Euclidean).
-        Returns (t_clamped, proj_lon, proj_lat, euclid_dist_in_degrees).
-        """
-        dx, dy = (bx - ax), (by - ay)
-        if dx == 0 and dy == 0:
-            return 0.0, ax, ay, math.hypot(px - ax, py - ay)
-        t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
-        t_clamped = max(0.0, min(1.0, t))
-        proj_lon = ax + t_clamped * dx
-        proj_lat = ay + t_clamped * dy
-        dist = math.hypot(px - proj_lon, py - proj_lat)
-        return t_clamped, proj_lon, proj_lat, dist
-
-    def _snap_to_route(clicked, lines_lonlat, metrics):
-        """
-        Snap clicked point to nearest point on any route part.
-        Inputs:
-          clicked: {'lat': <float>, 'lng': <float>}  (from st_folium)
-          lines_lonlat: [ [[lon,lat], ...], ... ]
-          metrics: output from _precompute_line_metrics_lonlat
-        Returns:
-          dict with lat/lng, lonlat, indices, t, chainage_m
-        """
-        cx, cy = float(clicked["lng"]), float(clicked["lat"])  # cx=lon, cy=lat
-
-        best = {
-            "euclid_dist": float("inf"),
-            "line_idx": None,
-            "seg_idx": None,
-            "t": None,
-            "proj_lon": None,
-            "proj_lat": None,
-            "chainage_m": None,
-        }
-
-        for li, line in enumerate(lines_lonlat):
-            m = metrics[li]
-            for si in range(len(line) - 1):
-                ax, ay = line[si][0], line[si][1]       # lon, lat
-                bx, by = line[si + 1][0], line[si + 1][1]
-                t, proj_lon, proj_lat, e_dist = _project_to_segment_lonlat(cx, cy, ax, ay, bx, by)
-                if e_dist < best["euclid_dist"]:
-                    seg_len_m = m["lengths_m"][si] if m["lengths_m"] else 0.0
-                    chainage = m["cum_m"][si] + seg_len_m * t
-                    best.update({
-                        "euclid_dist": e_dist,
-                        "line_idx": li,
-                        "seg_idx": si,
-                        "t": t,
-                        "proj_lon": proj_lon,
-                        "proj_lat": proj_lat,
-                        "chainage_m": chainage,
-                    })
-
-        return {
-            "lat": best["proj_lat"],
-            "lng": best["proj_lon"],
-            "lonlat": [best["proj_lon"], best["proj_lat"]],
-            "line_idx": best["line_idx"],
-            "seg_idx": best["seg_idx"],
-            "t": best["t"],
-            "chainage_m": best["chainage_m"],
-        }
-
-    # -----------------------
-    # Session & data
-    # -----------------------
-    with container:
-        tie_data = st.session_state.setdefault("tie_data", {})
-        buffers = tie_data.get("impact_buffers") or []                # list of rings [[lon,lat], ...]
-        sel_route_geom = tie_data.get("selected_route_geom")          # [[lon,lat], ...]
-
-        # Early exit: no buffer
-        if not buffers:
-            st.warning("No impact area buffer found. Please create a buffer in the previous step.")
-            m = folium.Map(location=[63.5, -149.0], zoom_start=5)
-            st_folium(m, use_container_width=True, height=520, key="route_snap_map",
-                      returned_objects=["last_clicked"])
-            return
-
-        # Early exit: no route selected — show buffer only
-        if not sel_route_geom:
-            st.warning("No route selected. Please select a route in the previous step.")
-            m = folium.Map(location=[63.5, -149.0], zoom_start=5, control_scale=True)
-            for ring in buffers:
-                geometry_to_folium(
-                    ring,
-                    color="#e64a19", weight=2, fill=True, fill_color="#ff7043", fill_opacity=0.35,
-                    feature_type = 'polygon'
-                ).add_to(m)
-            # Fit to buffers
-            buffer_rings_latlon = [ [ [lat, lon] for (lon, lat) in ring ] for ring in buffers ]
-            min_lat, min_lon, max_lat, max_lon = _compute_bounds_from_rings(buffer_rings_latlon)
-            if min_lat < float("inf"):
-                m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
-            st_folium(m, use_container_width=True, height=520, key="route_snap_map",
-                      returned_objects=["last_clicked"])
-            return
-
-        # No normalizers; route is a single polyline in lon/lat
-        lines_lonlat = [sel_route_geom]
-        line_metrics = _precompute_line_metrics_lonlat(lines_lonlat)
-
-        # ------------------------------------------------
-        # 1) Segmented control (or radio fallback)
-        # ------------------------------------------------
-        try:
-            placement_mode = st.segmented_control(
-                "Choose a point to drop",
-                options=["Start Point", "End Point"],
-                default="Start Point",
-                help="Clicks will move the selected endpoint, snapped to the route.",
-                key="route_place_mode",
-                width='stretch'
-            )
-        except Exception:
-            placement_mode = st.radio(
-                "Choose a point to drop",
-                options=["Start Point", "End Point"],
-                index=0,
-                help="Clicks will move the selected endpoint, snapped to the route.",
-                horizontal=True,
-                key="route_place_mode_fallback"
-            )
-
-        # ------------------------------------------------
-        # 2) Process click BEFORE drawing the map
-        # ------------------------------------------------
-        map_state_ss = st.session_state.get("route_snap_map") or {}
-        last_clicked = (map_state_ss or {}).get("last_clicked")
-
-        if last_clicked:
-            try:
-                snapped = _snap_to_route(last_clicked, lines_lonlat, line_metrics)
-
-                # Write to the correct key ONLY based on the control
-                if placement_mode == "Start Point":
-                    tie_data["selected_start_point"] = snapped
-                else:
-                    tie_data["selected_end_point"] = snapped
-            finally:
-                # Consume click to avoid reprocessing on rerun
-                try:
-                    st.session_state["route_snap_map"]["last_clicked"] = None
-                except Exception:
-                    pass
-
-        # ------------------------------------------------
-        # Local copies for display (mirror, do NOT cross-assign)
-        # ------------------------------------------------
-        start_pt = tie_data.get("selected_start_point")
-        st.session_state['selected_start_point'] = start_pt  # echo to top-level if you need it
-
-        end_pt = tie_data.get("selected_end_point")
-        st.session_state['selected_end_point'] = end_pt      # <-- fixed (no overwrite)
-
-        # ------------------------------------------------
-        # 3) Build & render map (everything via geometry_to_folium)
-        # ------------------------------------------------
-        m = folium.Map(location=[63.5, -149.0], zoom_start=5, control_scale=True)
-
-        # Buffers (impact area)
-        for ring in buffers:
+    else:
+        # Placement mode (Set Start / Set End): draw only the selected route
+        if selected_id and selected_geom:
             geometry_to_folium(
-                ring,
-                color="#e64a19",
-                weight=2,
-                fill=True,
-                fill_color="#ff7043",
-                fill_opacity=0.35,
-                feature_type = 'polygon'
+                selected_geom,
+                color="#e53935",
+                weight=6,
+                opacity=1.0,
+                tooltip=f"Route ID: {fmt_string(selected_id)}<br>Route Name: {fmt_string(st.session_state.get(sel_name_key, '') or id_to_name.get(selected_id, ''))}",
+                feature_type="line",
             ).add_to(m)
-
-        # Fit to buffers only
-        buffer_rings_latlon = [ [ [lat, lon] for (lon, lat) in ring ] for ring in buffers ]
-        min_lat, min_lon, max_lat, max_lon = _compute_bounds_from_rings(buffer_rings_latlon)
-        if min_lat < float("inf"):
-            m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
-
-        # Selected route (single polyline)
-        geometry_to_folium(
-            sel_route_geom,
-            color="#e53935",
-            weight=6,
-            opacity=1.0,
-            feature_type = 'line'
-        ).add_to(m)
-
-        # Start/End markers
-        if start_pt and isinstance(start_pt.get("lonlat"), list):
-            geometry_to_folium(
-                [start_pt["lonlat"]],  # [[lon, lat]] → marker
-                icon=folium.Icon(color="green"),
-                tooltip="Start point",
-                feature_type = 'point'
-            ).add_to(m)
-
-        if end_pt and isinstance(end_pt.get("lonlat"), list):
-            geometry_to_folium(
-                [end_pt["lonlat"]],
-                icon=folium.Icon(color="red"),
-                tooltip="End point",
-                feature_type = 'point'
-            ).add_to(m)
-
-        # Optional: remove Leaflet focus outlines
-        try:
-            from branca.element import Element
-            css = Element("""
-            <style>
-              .leaflet-container a:focus,
-              .leaflet-interactive:focus,
-              .leaflet-overlay-pane svg path:focus,
-              .leaflet-clickable:focus {
-                outline: none !important; box-shadow: none !important;
-              }
-            </style>
-            """)
-            m.get_root().html.add_child(css)
-        except Exception:
+        else:
+            # No selected route yet; hide candidates per requirement
             pass
 
-        _ = st_folium(
-            m,
-            use_container_width=True,
-            height=520,
-            key="route_snap_map",
-            returned_objects=["last_clicked"],
+    # Project Geometry
+    project_geom = st.session_state.get("project_geometry")
+    project_geom_type = (st.session_state.get("project_geometry_type") or "").lower()
+    if project_geom and project_geom_type:
+        if project_geom_type in ("point",):
+            geometry_to_folium(
+                project_geom,
+                feature_type="point",
+                icon=folium.Icon(color="blue"),
+            ).add_to(m)
+        elif project_geom_type in ("line", "linestring"):
+            geometry_to_folium(project_geom, feature_type="line", weight=4).add_to(m)
+        elif project_geom_type in ("polygon",):
+            geometry_to_folium(
+                project_geom,
+                feature_type="polygon",
+                weight=4,
+                fill=True,
+            ).add_to(m)
+        else:
+            geometry_to_folium(project_geom, feature_type="line", weight=4).add_to(m)
+
+    # Markers
+    ti = st.session_state.get(ti_key, {})
+    if ti.get("start_point") and isinstance(ti["start_point"].get("lonlat"), list):
+        geometry_to_folium(
+            [ti["start_point"]["lonlat"]],
+            icon=folium.Icon(color="green"),
+            tooltip="Start",
+            feature_type="point",
+        ).add_to(m)
+    if ti.get("end_point") and isinstance(ti["end_point"].get("lonlat"), list):
+        geometry_to_folium(
+            [ti["end_point"]["lonlat"]],
+            icon=folium.Icon(color="red"),
+            tooltip="End",
+            feature_type="point",
+        ).add_to(m)
+
+    # --- ALWAYS APPLY FIT (after all layers are added) ---
+    if fit_bounds_value:
+        m.fit_bounds(fit_bounds_value)
+
+    # Render
+    st_folium(
+        m,
+        use_container_width=True,
+        height=520,
+        key=map_key,
+        returned_objects=["last_clicked"],
+    )
+
+    if st.session_state.get(tol_key):
+        st.info("Click closer to a route (within ~100m).")
+        st.session_state.pop(tol_key, None)
+
+    if st.session_state.pop(reset_notice_key, False):
+        st.info("Project geometry changed — route selection and points were cleared.")
+
+    # -----------------------------------------------------
+    # Action buttons under the map: LOAD / CLEAR
+    # -----------------------------------------------------
+    st.session_state.setdefault("traffic_impacts_list", [])
+
+    def _build_ti_package():
+        ti_local = st.session_state.get(ti_key, {}) or {}
+        package = {
+            "route_id": ti_local.get("route_id"),
+            "route_name": ti_local.get("route_name"),
+            "route_geom": ti_local.get("route_geom"),
+            "start_point": ti_local.get("start_point"),
+            "end_point": ti_local.get("end_point"),
+            # Optional context (kept as-is; no normalization)
+            "impact_area": st.session_state.get("impact_area"),
+            "project_geometry": st.session_state.get("project_geometry"),
+            "project_geometry_type": (st.session_state.get("project_geometry_type") or "").lower(),
+            "key_prefix": key_prefix,
+        }
+        return package
+
+    def _clear_current_selection():
+        # Clear the TI dict values
+        st.session_state[ti_key].update(
+            {
+                "route_id": None,
+                "route_name": None,
+                "route_geom": None,
+                "start_point": None,
+                "end_point": None,
+            }
         )
+        # Clear mirrored keys
+        st.session_state.pop(sel_id_key, None)
+        st.session_state.pop(sel_name_key, None)
+        st.session_state.pop(sel_geom_key, None)
+        st.session_state.pop(f"{key_prefix}selected_start_point", None)
+        st.session_state.pop(f"{key_prefix}selected_end_point", None)
+        # Clear flags and last click (do NOT touch seg_key here)
+        st.session_state.pop(tol_key, None)
+        try:
+            st.session_state.setdefault(map_key, {})
+            st.session_state[map_key]["last_clicked"] = None
+        except Exception:
+            pass
+        st.session_state["map_reset_counter"] = st.session_state.get("map_reset_counter", 0) + 1
+
+    # Buttons container
+    button_container = st.container()
+    with button_container:
+        col1, col2 = st.columns([1, 1])
+
+        with col1:
+            if st.button("LOAD", use_container_width=True, type="primary", key=f"{key_prefix}btn_load"):
+                package = _build_ti_package()
+                # Guard: require a route AND both points before saving
+                has_route = bool(package.get("route_id") and package.get("route_geom"))
+                has_both_points = bool(package.get("start_point") and package.get("end_point"))
+                if has_route and has_both_points:
+                    st.session_state["traffic_impacts_list"].append(package)
+                else:
+                    st.warning("Select a route and set both Start and End points before loading.")
+
+        with col2:
+            if st.button("CLEAR", use_container_width=True, key=f"{key_prefix}btn_clear"):
+                # If the in-progress selection was previously loaded, remove it from the list.
+                # We do this BEFORE clearing local selection so we can compare fields.
+                candidate = _build_ti_package()
+                impacts = st.session_state.get("traffic_impacts_list", [])
+                if impacts:
+                    st.session_state["traffic_impacts_list"] = [
+                        p for p in impacts
+                        if not (
+                            p.get("route_id") == candidate.get("route_id")
+                            and p.get("start_point") == candidate.get("start_point")
+                            and p.get("end_point") == candidate.get("end_point")
+                        )
+                    ]
+
+                _clear_current_selection()
+                # Force mode back to "1. Select Route" on the next run,
+                # applied BEFORE the widget is instantiated.
+                st.session_state[force_select_route_flag] = True
+                st.rerun()

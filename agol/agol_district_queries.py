@@ -13,7 +13,6 @@ Updated:
 import streamlit as st
 import re
 from agol.agol_util import AGOLQueryIntersect
-from util.geospatial_util import GeometryUtil, create_buffers
 
 
 # =============================================================================

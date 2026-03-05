@@ -354,16 +354,6 @@ def load_geometry_app():
                     st.session_state["selected_route"] = route_val
                     st.session_state["selected_boundary"] = boundary_val
 
-                    # Ensure AASHTOWare inputs remain available if applicable
-                    if option == "AASHTOWare" and project_type.startswith("Site"):
-                        _ = st.session_state.get("awp_dcml_mid_latitude")
-                        _ = st.session_state.get("awp_dcml_mid_longitude")
-                    if option == "AASHTOWare" and project_type.startswith("Route"):
-                        _ = st.session_state.get("awp_dcml_bop_latitude")
-                        _ = st.session_state.get("awp_dcml_bop_longitude")
-                        _ = st.session_state.get("awp_dcml_eop_latitude")
-                        _ = st.session_state.get("awp_dcml_eop_longitude")
-
                     # Mark success
                     st.session_state["footprint_submitted"] = True
                     st.session_state["just_submitted_geometry"] = True
