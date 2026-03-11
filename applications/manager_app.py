@@ -407,24 +407,10 @@ def run_manager_app():
 
             # Define tab callables. Only the chosen one will run.
             def _tab_information():
-                st.subheader("Project Summary")
-                st.write(f"GlobalID: `{st.session_state.get('apex_guid')}`")
-                st.write(f"ObjectID: `{st.session_state.get('apex_object_id')}`")
-                st.write(f"AWP Contract ID: `{st.session_state.get('apex_awp_id')}`")
-                st.write(f"Project Type: `{st.session_state.get('apex_proj_type')}`")
-                if st.session_state.get("geom_ready"):
-                    agg = st.session_state.get("apex_geom") or {}
-                    g_count = len(agg.get("geoms") or [])
-                    st.write(f"Related geometry elements: `{g_count}`")
-                elif st.session_state.get("geom_error"):
-                    st.error(st.session_state.get("geom_error"))
+                st.info("Information Management Tab Under Development")
 
             def _tab_footprint():
-                st.subheader("Traffic Impacts")
-                # If you actually need a map here, build it here (not globally)
-                # m = folium.Map(location=[64.2008, -149.4937], zoom_start=4)
-                # add_small_geocoder(m)
-                st.info("Traffic impact management UI goes here.")
+                st.info("Footprint Management Tab Under Development")
 
             def _tab_traffic_impacts():
                 with st.container(border=True):
@@ -432,11 +418,11 @@ def run_manager_app():
 
             def _tab_communities():
                 with st.container(border=True):
-                    manage_impacted_communities()
+                    st.info("Communities Management Tab Under Development")
+                    #manage_impacted_communities()
 
             def _tab_deployment():
-                st.subheader("Notes")
-                st.info("Notes / comments UI goes here.")
+                st.info("Deployment Management Tab Under Development")
 
             TAB_DISPATCH = {
                 "INFORMATION": _tab_information,
