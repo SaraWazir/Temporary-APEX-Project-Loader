@@ -1104,6 +1104,12 @@ def aashtoware_path(awp: dict, container) -> None:
             "These coordinates reflect the project's begin (BOP), end (EOP), "
             "and optional midpoint from AASHTOWare. Draw the project route on the map below, then click LOAD."
         )
+        st.info(
+        "UNDER DEVELOPMENT — Routes sourced from AASHTOWare are still being built out. "
+        "You can currently view the BOP, Midpoint, and EOP for a project and manually draw a route between those points. "
+        "Automated route retrieval from AASHTOWare is not yet active."
+        )
+
 
         # -----------------------------
         # Extract BOP/EOP/Midpoint as-is
