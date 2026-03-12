@@ -1838,9 +1838,10 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
             return None
 
     preferred_fit_geom = (
-        st.session_state.get("apex_proj_area")  # canonical project area, preferred
+        st.session_state.get("apex_proj_area")
         or st.session_state.get(fit_geom_key)
         or area_for_display
+        or st.session_state.get("impact_area")  # ← NEW guaranteed fallback
     )
     bounds = _compute_bounds(preferred_fit_geom)
     if bounds:
@@ -1935,11 +1936,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
 
 
 
-
-
-import streamlit as st
-import folium
-from streamlit_folium import st_folium
 
 # assuming these helpers exist in your environment
 # from your_module import get_multiple_fields, select_record, geometry_to_folium

@@ -193,7 +193,15 @@ def run_manager_app():
         try:
             apex_rec = select_record(
                 url, layer, "globalid", guid,
-                fields=["globalid", "objectid", "AWP_Contract_ID", "Proj_Type"],
+                fields=[
+                    "globalid", 
+                    "objectid", 
+                    "AWP_Contract_ID", 
+                    "Proj_Type", 
+                    "AWP_Proj_Name", 
+                    "Proj_Name", 
+                    "Database_Status"
+                    ],
                 return_geometry=True
             )
             _set_apex_context_from_record(apex_rec)

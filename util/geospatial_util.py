@@ -396,3 +396,46 @@ def center_of_geometry(
 
     # Unreachable
     raise ValueError("Unsupported geometry type")
+
+
+
+
+
+def slice_and_buffer_route(route_geom: list, start_point: list, end_point: list, distance_m: int = 50) -> list:
+    """
+    Slices a route between a start and end point and returns a buffered polygon
+    as a list of rings suitable for an ESRI polygon geometry.
+
+    Parameters
+    ----------
+    route_geom  : list of [lon, lat] pairs representing the full route
+    start_point : [lon, lat] snapped to the route line
+    end_point   : [lon, lat] snapped to the route line
+    distance_m  : buffer distance in meters (default 50)
+
+    Returns
+    -------
+    list of rings ([[lon, lat], ...]) for use in {"rings": ..., "spatialReference": {"wkid": 4326}}
+    """
+    from shapely.geometry import LineString, Point
+    from shapely.ops import substring
+
+    route_line = LineString(route_geom)
+
+    sp_point = Point(start_point[0], start_point[1])
+    ep_point = Point(end_point[0], end_point[1])
+
+    sp_dist = route_line.project(sp_point)
+    ep_dist = route_line.project(ep_point)
+
+    start_dist = min(sp_dist, ep_dist)
+    end_dist   = max(sp_dist, ep_dist)
+
+    sliced_segment = substring(route_line, start_dist, end_dist)
+    sliced_coords  = list(sliced_segment.coords)
+
+    buffer_rings = create_buffers(geometry_list=[sliced_coords], geom_type="line", distance_m=distance_m)
+    if not buffer_rings:
+        raise RuntimeError("create_buffers produced no output for sliced segment.")
+
+    return buffer_rings

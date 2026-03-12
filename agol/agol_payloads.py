@@ -59,7 +59,7 @@ import streamlit as st
 from shapely.geometry import LineString, Point, Polygon
 import datetime
 from agol.agol_util import select_record, get_objectids_by_identifier
-from util.geospatial_util import center_of_geometry, create_buffers
+from util.geospatial_util import center_of_geometry, create_buffers, slice_and_buffer_route
 
 # =============================================================================
 # PAYLOAD CLEANING / NORMALIZATION HELPERS
@@ -758,35 +758,35 @@ def geography_payload(name: str):
 def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -> dict:
     """
     Build ArcGIS applyEdits payloads for:
-      - parent (Traffic Impact polygon)
-      - route  (polyline child)
-      - start  (start point child)
-      - end    (end point child)
+    - parent (Traffic Impact polygon)
+    - route (polyline child)
+    - start (start point child)
+    - end (end point child)
 
     Data source:
     * Everything comes from the provided `package` (single source of truth).
     * For updates, objectids are taken from the package if present:
-        - parent: package["objectid"]
-        - route : package["route_objectid"]
-        - start : package["start_objectid"]
-        - end   : package["end_objectid"]
+      - parent: package["objectid"]
+      - route : package["route_objectid"]
+      - start : package["start_objectid"]
+      - end   : package["end_objectid"]
     * For adds to child layers, attributes MUST include:
-        {"parentglobalid": st.session_state["traffic_impact_globalid"]}
+      {"parentglobalid": st.session_state["traffic_impact_globalid"]}
 
     Geometry expectations (all in [lon, lat]):
-    * parent polygon: package["area"]            -> {"rings": ...}
-    * route polyline: package["route_geom"]      -> {"paths": [route_geom]}
-    * start point   : package["start_point"]["lonlat"] -> {"x": lon, "y": lat}
-    * end point     : package["end_point"]["lonlat"]   -> {"x": lon, "y": lat}
+    * parent polygon: sliced route between start/end point buffered 50m via slice_and_buffer_route()
+    * route polyline: package["route_geom"] -> {"paths": [route_geom]}
+    * start point  : package["start_point"]["lonlat"] -> {"x": lon, "y": lat}
+    * end point    : package["end_point"]["lonlat"]   -> {"x": lon, "y": lat}
 
     Parameters
     ----------
-    package : dict
+    package   : dict
     edit_type : {'adds','updates','deletes'} | None
         If None, infer as:
-          - 'deletes' if package.get('delete') or package.get('action') in ('delete','deletes')
-          - 'updates' if any objectid is present in package
-          - else 'adds'
+        - 'deletes' if package.get('delete') or package.get('action') in ('delete','deletes')
+        - 'updates' if any objectid is present in package
+        - else 'adds'
     which : {'all','parent','children'}
         'all'      -> return parent + route + start + end
         'parent'   -> return parent only
@@ -795,12 +795,12 @@ def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -
     Returns
     -------
     dict with selected payload dicts, e.g.:
-      {
+    {
         "parent": {<applyEdits section>},
         "route" : {<applyEdits section>},
         "start" : {<applyEdits section>},
         "end"   : {<applyEdits section>}
-      }
+    }
     """
     import streamlit as st
 
@@ -831,10 +831,9 @@ def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -
         raise ValueError("edit_type must be 'adds', 'updates', or 'deletes'")
 
     # Extract core pieces once
-    area       = package.get("area") or package.get("impact_area")
     route_geom = package.get("route_geom")
-    sp         = (package.get("start_point") or {}).get("lonlat")
-    ep         = (package.get("end_point")  or {}).get("lonlat")
+    sp = (package.get("start_point") or {}).get("lonlat")
+    ep = (package.get("end_point") or {}).get("lonlat")
 
     parent_oid = (
         package.get("objectid")
@@ -842,9 +841,9 @@ def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -
         or package.get("objectId")
         or package.get("ti_objectid")
     )
-    route_oid  = package.get("route_objectid") or package.get("routeObjectId") or package.get("route_OBJECTID")
-    start_oid  = package.get("start_objectid") or package.get("startObjectId") or package.get("start_OBJECTID")
-    end_oid    = package.get("end_objectid")   or package.get("endObjectId")   or package.get("end_OBJECTID")
+    route_oid = package.get("route_objectid") or package.get("routeObjectId") or package.get("route_OBJECTID")
+    start_oid = package.get("start_objectid") or package.get("startObjectId") or package.get("start_OBJECTID")
+    end_oid   = package.get("end_objectid")   or package.get("endObjectId")   or package.get("end_OBJECTID")
 
     # Common field extras (attributes pulled only from package)
     route_id   = package.get("route_id")
@@ -862,39 +861,52 @@ def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -
                 raise ValueError("Parent delete requires package['objectid'].")
             parent_payload = {"deletes": [parent_oid]}
         else:
-            # adds/updates require geometry
-            if not area:
-                raise ValueError("Parent polygon requires package['area'] (rings).")
-            parent_geom = {"rings": area, "spatialReference": {"wkid": 4326}}
+            # adds/updates: build parent geometry from sliced + buffered route segment
+            if not (isinstance(route_geom, (list, tuple)) and len(route_geom) >= 2):
+                raise ValueError("Parent polygon requires package['route_geom'] as a list of [lon, lat] pairs.")
+            if not (isinstance(sp, (list, tuple)) and len(sp) == 2):
+                raise ValueError("Parent polygon requires package['start_point']['lonlat'] as [lon, lat].")
+            if not (isinstance(ep, (list, tuple)) and len(ep) == 2):
+                raise ValueError("Parent polygon requires package['end_point']['lonlat'] as [lon, lat].")
+
+            buffer_rings = slice_and_buffer_route(route_geom, sp, ep, distance_m=50)
+            parent_geom  = {"rings": buffer_rings, "spatialReference": {"wkid": 4326}}
 
             if et == "adds":
-                # attributes only from package; clean_payload will strip Nones
                 parent_attrs = {
-                    "Event_Name":  event_name,
-                    "Route_ID":    route_id,
-                    "Route_Name":  route_name,
-                    "Start_X":     (sp[0] if isinstance(sp, (list, tuple)) and len(sp) == 2 else None),
-                    "Start_Y":     (sp[1] if isinstance(sp, (list, tuple)) and len(sp) == 2 else None),
-                    "End_X":       (ep[0] if isinstance(ep, (list, tuple)) and len(ep) == 2 else None),
-                    "End_Y":       (ep[1] if isinstance(ep, (list, tuple)) and len(ep) == 2 else None),
-                    "Alaska_511_COMM": "No",
-                    "Alaska_511": "No",
-                    "APEX_GUID":    st.session_state.get("apex_guid"),
-                    "AWP_Proj_Name": st.session_state.get("apex_awp_name"),
-                    "Proj_Name": st.session_state.get("apex_proj_name"),
-                    "APEX_Database_Status": st.session_state.get("apex_database_status")
+                    "Event_Name":             event_name,
+                    "Route_ID":               route_id,
+                    "Route_Name":             route_name,
+                    "Start_X":                (sp[0] if isinstance(sp, (list, tuple)) and len(sp) == 2 else None),
+                    "Start_Y":                (sp[1] if isinstance(sp, (list, tuple)) and len(sp) == 2 else None),
+                    "End_X":                  (ep[0] if isinstance(ep, (list, tuple)) and len(ep) == 2 else None),
+                    "End_Y":                  (ep[1] if isinstance(ep, (list, tuple)) and len(ep) == 2 else None),
+                    "Alaska_511_COMM":        "No",
+                    "DOT_PF_Proj_Phone_COMM": "NIE",
+                    "Agency_Name_COMM":       "NIE",
+                    "Agency_Phone_COMM":      "NIE",
+                    "Contractor_Name_COMM":   "NIE",
+                    "Contractor_Phone_COMM":  "NIE",
+                    "Event_Type_COMM":        "Roadwork / Maintenance",
+                    "Full_Closure_COMM":      "NIE",
+                    "Status_COMM":            "NIE",
+                    "Description_COMM":       "NIE",
+                    "Broadcast_COMM":         "NIE",
+                    "Notes_for_Approver":     "No Notes",
+                    "Notes_for_Next_Week":    "No Notes",
+                    "Drafter":                "Unassigned",
+                    "Approver":               "Unassigned",
+                    "APEX_GUID":              st.session_state.get("apex_guid"),
+                    "AWP_Proj_Name":          st.session_state.get("apex_awp_name"),
+                    "Proj_Name":              st.session_state.get("apex_proj_name"),
+                    "APEX_Database_Status":   st.session_state.get("apex_database_status")
                 }
                 parent_payload = {"adds": [{"attributes": parent_attrs, "geometry": parent_geom}]}
             else:  # updates
                 if parent_oid is None:
                     raise ValueError("Parent update requires package['objectid'].")
-                if not (isinstance(sp, (list, tuple)) and len(sp) == 2):
-                    raise ValueError("Parent update requires start_point.lonlat [lon, lat].")
-                if not (isinstance(ep, (list, tuple)) and len(ep) == 2):
-                    raise ValueError("Parent update requires end_point.lonlat [lon, lat].")
-
                 parent_attrs = {
-                    "objectId":  parent_oid,
+                    "objectId":   parent_oid,
                     "Event_Name": event_name,
                     "Route_ID":   route_id,
                     "Route_Name": route_name,
@@ -907,7 +919,6 @@ def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -
 
         def _clean_parent(p):
             return clean_payload(p, et) if "clean_payload" in globals() else p
-
         out["parent"] = _clean_parent(parent_payload)
 
     # ---------------------------------
@@ -976,7 +987,6 @@ def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -
 
         def _clean_child(p):
             return clean_payload(p, et) if "clean_payload" in globals() else p
-
         out["route"] = _clean_child(route_payload)
         out["start"] = _clean_child(start_payload)
         out["end"]   = _clean_child(end_payload)
