@@ -1,34 +1,33 @@
-"""
-=============================================================================
-PROJECT DETAILS FORM (STREAMLIT)
-=============================================================================
-Purpose:
-Renders a two-mode project details form:
-    1) AASHTOWare Database (read-only display of values pulled into session_state)
-    2) User Input (editable Streamlit widgets)
-
-Key behaviors:
-    - Source-specific widget keys to prevent value bleed between AWP vs UI
-    - Read-only “widgets” rendered via HTML/CSS while still persisting values
-    - Per-source snapshot persistence for navigation and switching modes
-    - Impacted communities selection persisted per source and mirrored for legacy usage
-    - ✅ Submit button auto-resets to "SUBMIT FOOTPRINT" when:
-        * switching modes (AASHTOWare <-> User Input)
-        * choosing a different AASHTOWare project
-        * any form field changes
-=============================================================================
-"""
-
+# =============================================================================
+# PROJECT DETAILS FORM (STREAMLIT)
+# =============================================================================
+# Purpose:
+# Renders a two-mode project details form:
+#  1) AASHTOWare Database (read-only display of values pulled into session_state)
+#  2) User Input (editable Streamlit widgets)
+# Key behaviors:
+# - Source-specific widget keys to prevent value bleed between AWP vs UI
+# - Read-only “widgets” rendered via HTML/CSS while still persisting values
+# - Per-source snapshot persistence for navigation and switching modes
+# - Impacted communities selection persisted per source and mirrored for legacy usage
+# - ✅ Submit button auto-resets to "SUBMIT FOOTPRINT" when:
+#   * switching modes (AASHTOWare <-> User Input)
+#   * choosing a different AASHTOWare project
+#   * any form field changes
+# - NEW: If st.session_state['set_year'] is provided (from URL), auto-select that
+#   year in the Construction Year widget (when valid) and show an info
+#   message if it's not in the global list of construction years.
+# =============================================================================
 import streamlit as st
 import datetime
 from agol.agol_util import get_multiple_fields, select_record, aashtoware_geometry
 from util.read_only_util import ro_widget
 from util.input_util import (
-    fmt_currency, 
-    fmt_date, 
-    fmt_date_or_none, 
-    fmt_int, 
-    fmt_int_or_none, 
+    fmt_currency,
+    fmt_date,
+    fmt_date_or_none,
+    fmt_int,
+    fmt_int_or_none,
     fmt_string,
     fmt_agol_date,
     widget_key
@@ -38,7 +37,6 @@ from util.streamlit_util import (
     impacted_comms_select,
     aashtoware_project
 )
-
 
 # =============================================================================
 # SNAPSHOTTING / PERSISTENCE
@@ -63,7 +61,6 @@ _PERSISTED_KEYS = [
     "proj_prac",
     "anticipated_start",
     "anticipated_end",
-
     # Award info
     "award_date",
     "award_fiscal_year",
@@ -72,30 +69,24 @@ _PERSISTED_KEYS = [
     "current_contract_amount",
     "amount_paid_to_date",
     "tenadd",
-
     # Descriptions / links
     "proj_desc",
     "proj_web",
-
-    #Route ID/Name
+    # Route ID/Name
     'route_id',
     'route_name',
-
     # Contact (new/current)
     "contact_name",
     "contact_role",
     "contact_email",
     "contact_phone",
-
     # Impacted communities (legacy mirror keys used downstream)
     "impact_comm",
     "impact_comm_ids",
     "impact_comm_names",
-
     # AWP-specific display fields (read-only widgets)
     "awp_proj_name",
     "awp_proj_desc",
-
     # identifiers for re-population
     "aashto_id",
     "aashto_label",
@@ -106,13 +97,11 @@ _SOURCE_SNAPSHOT_KEY = {
     "User Input": "saved_user",
 }
 
-
 def _snapshot_form(source: str):
     snap_key = _SOURCE_SNAPSHOT_KEY.get(source)
     if not snap_key:
         return
     st.session_state[snap_key] = {k: st.session_state.get(k, None) for k in _PERSISTED_KEYS}
-
 
 def _preload_from_snapshot(source: str):
     snap_key = _SOURCE_SNAPSHOT_KEY.get(source)
@@ -122,7 +111,6 @@ def _preload_from_snapshot(source: str):
     for k, v in snap.items():
         if v is not None:
             st.session_state[k] = v
-
 
 # =============================================================================
 # CHANGE WATCH / DIRTY-STATE HELPERS
@@ -136,10 +124,8 @@ _WATCH_KEYS = sorted(set(_PERSISTED_KEYS + [
     "phase",
 ]))
 
-
 def _mark_unsaved():
     st.session_state["details_complete"] = False
-
 
 def _watch_and_reset():
     changed = False
@@ -149,16 +135,13 @@ def _watch_and_reset():
         if last_k in st.session_state and st.session_state[last_k] != v:
             changed = True
         st.session_state[last_k] = v
-
     if changed:
         _mark_unsaved()
-
 
 # =============================================================================
 # FORM ENTRYPOINT: SOURCE SELECTION + ROUTING
 # =============================================================================
 def project_details_form():
-
     st.session_state.setdefault("form_version", 0)
     st.session_state.setdefault("prev_info_option", None)
     st.session_state.setdefault("info_option", None)
@@ -173,18 +156,15 @@ def project_details_form():
         st.session_state["info_option"] = prior_choice
 
     st.markdown("###### CHOOSE PROJECT SOURCE\n", unsafe_allow_html=True)
-
     selection = st.segmented_control(
         "Choose Source Method:",
         OPTIONS,
         key="info_option",
     )
     st.write("")
-
     current_option = selection
     st.session_state["current_option"] = selection
     previous_option = st.session_state.get("prev_info_option")
-
     if current_option is not None and current_option != previous_option:
         if current_option == "User Input":
             for k in list(st.session_state.keys()):
@@ -193,11 +173,9 @@ def project_details_form():
             st.session_state["aashto_id"] = ""
             st.session_state["aashto_label"] = ""
             st.session_state["aashto_selected_project"] = ""
-
             for k in _PERSISTED_KEYS:
                 if not k.startswith("awp_"):
                     st.session_state[k] = ""
-
         st.session_state["prev_info_option"] = current_option
         st.session_state["details_complete"] = False
         st.session_state["form_version"] += 1
@@ -207,33 +185,25 @@ def project_details_form():
 
     if current_option == "AASHTOWare Database":
         st.markdown("###### SELECT PROJECT AASHTOWARE PROJECT\n", unsafe_allow_html=True)
-
         with st.container(border=True):
             aashtoware_project()
-
-            for k in ("awp_id", "aashto_selected_project"):
-                curr = st.session_state.get(k)
-                prev_k = f"__last__{k}"
-                if prev_k in st.session_state and st.session_state[prev_k] != curr:
-                    _mark_unsaved()
-                st.session_state[prev_k] = curr
-        
+        for k in ("awp_id", "aashto_selected_project"):
+            curr = st.session_state.get(k)
+            prev_k = f"__last__{k}"
+            if prev_k in st.session_state and st.session_state[prev_k] != curr:
+                _mark_unsaved()
+            st.session_state[prev_k] = curr
         st.write('')
         _render_original_form(is_awp=True)
-
     elif current_option == "User Input":
         _render_original_form(is_awp=False)
-
     else:
         st.info("Please choose a source method above to begin.")
-
-
 
 # =============================================================================
 # FORM BODY RENDERER
 # =============================================================================
 def _render_original_form(is_awp: bool):
-
     version = st.session_state.get("form_version", 0)
     form_key = f"project_details_form_{version}"
 
@@ -258,7 +228,6 @@ def _render_original_form(is_awp: bool):
         # SECTION 1
         # ---------------------------------------------------------------------
         st.markdown("<h5>1. PROJECT NAME</h5>", unsafe_allow_html=True)
-
         if is_awp:
             c1, c2 = st.columns(2)
             with c1:
@@ -287,13 +256,13 @@ def _render_original_form(is_awp: bool):
         # SECTION 2
         # ---------------------------------------------------------------------
         st.markdown("<h5>2. CONSTRUCTION YEAR, PHASE, & IDS</h5>", unsafe_allow_html=True)
-
         col1, col2 = st.columns(2)
         with col1:
             options = [str(o) if o is not None else "" for o in st.session_state["construction_years"]]
             saved = st.session_state.get("construction_year", "")
             saved_str = str(saved) if saved is not None else ""
 
+            # Existing AWP years for currently selected project (may be "")
             existing_raw = st.session_state.get("awp_selected_construction_years", "")
             if isinstance(existing_raw, str):
                 existing = {v.strip() for v in existing_raw.split(",") if v.strip()}
@@ -302,24 +271,49 @@ def _render_original_form(is_awp: bool):
             else:
                 existing = set()
 
+            # Exclude already-used years for the selected AWP project
             filtered_options = [opt for opt in options if opt not in existing]
             if not filtered_options:
                 filtered_options = [""]
 
+            # ---- MINIMAL SAFE FIX START ----
+            # Compute intended default choice (formerly used to build index)
             if saved_str in filtered_options:
-                idx = filtered_options.index(saved_str)
+                default_choice = saved_str
             elif "" in filtered_options:
-                idx = filtered_options.index("")
+                default_choice = ""
             else:
-                idx = 0
+                default_choice = filtered_options[0]
 
-            st.session_state["construction_year"] = st.selectbox(
+            # Respect URL/session param set_year (e.g., "CY2026")
+            set_year_raw = st.session_state.get("set_year")
+            set_year = str(set_year_raw).strip().upper() if set_year_raw else None
+            if set_year:
+                if set_year in options:
+                    if set_year in filtered_options:
+                        default_choice = set_year
+                    # else: keep default_choice; year already used by selected AWP project
+                else:
+                    st.info(
+                        f"The input year '{set_year}' does not match a construction year for this work."
+                    )
+
+            # Pre-seed the *widget key* and render WITHOUT index=...
+            wk = widget_key("construction_year", version, is_awp)
+            if wk not in st.session_state:
+                st.session_state[wk] = default_choice
+
+            selected_cy = st.selectbox(
                 "Construction Year ⮜",
                 filtered_options,
-                index=idx,
-                key=widget_key("construction_year", version, is_awp),
+                key=wk,
                 help="The project’s assigned year. Continuing projects must also receive a new year.",
             )
+
+            # Mirror to business key used elsewhere
+            st.session_state["construction_year"] = selected_cy
+            # ---- MINIMAL SAFE FIX END ----
+
         if is_awp:
             with col2:
                 ro_widget(
@@ -341,7 +335,6 @@ def _render_original_form(is_awp: bool):
         # SECTION 3
         # ---------------------------------------------------------------------
         st.markdown("<h5>3. FUNDING TYPE & PRACTICE</h5>", unsafe_allow_html=True)
-
         if is_awp:
             col13, col14 = st.columns(2)
             with col13:
@@ -382,7 +375,6 @@ def _render_original_form(is_awp: bool):
         # SECTION 4
         # ---------------------------------------------------------------------
         st.markdown("<h5>4. START & END DATE</h5>", unsafe_allow_html=True)
-
         if is_awp:
             col10, col11 = st.columns(2)
             with col10:
@@ -421,7 +413,6 @@ def _render_original_form(is_awp: bool):
         # SECTION 5
         # ---------------------------------------------------------------------
         st.markdown("<h5>5. AWARD INFORMATION</h5>", unsafe_allow_html=True)
-
         if is_awp:
             col12, col13 = st.columns(2)
             with col12:
@@ -530,7 +521,6 @@ def _render_original_form(is_awp: bool):
         # SECTION 6
         # ---------------------------------------------------------------------
         st.markdown("<h5>6. DESCRIPTION</h5>", unsafe_allow_html=True)
-
         if is_awp:
             ro_widget(
                 key="awp_proj_desc",
@@ -560,7 +550,6 @@ def _render_original_form(is_awp: bool):
         # SECTION 7
         # ---------------------------------------------------------------------
         st.markdown("<h5>7. CONTACT</h5>", unsafe_allow_html=True)
-
         if is_awp:
             ro_widget(
                 key="contact_name",
@@ -607,7 +596,6 @@ def _render_original_form(is_awp: bool):
         # SECTION 8
         # ---------------------------------------------------------------------
         st.markdown("<h5>8. WEB LINK</h5>", unsafe_allow_html=True)
-
         if is_awp:
             ro_widget(
                 key="proj_web",
@@ -627,10 +615,9 @@ def _render_original_form(is_awp: bool):
         # ---------------------------------------------------------------------
         # SUBMIT
         # ---------------------------------------------------------------------
-
         _watch_and_reset()
-
         submitted = bool(st.session_state.get("details_complete", False))
+
         btn_ph = st.empty()
 
         def _render_submit_button(is_done: bool):
@@ -646,7 +633,6 @@ def _render_original_form(is_awp: bool):
         clicked = _render_submit_button(submitted)
 
         if clicked and not submitted:
-
             if is_awp:
                 required_fields = {
                     "Construction Year": st.session_state.get("construction_year"),
@@ -660,8 +646,7 @@ def _render_original_form(is_awp: bool):
                     "Public Description": st.session_state.get("proj_desc"),
                 }
 
-            missing_fields = [f for f,v in required_fields.items() if not v]
-
+            missing_fields = [f for f, v in required_fields.items() if not v]
             if missing_fields:
                 st.session_state["details_complete"] = False
                 for field in missing_fields:
@@ -669,7 +654,6 @@ def _render_original_form(is_awp: bool):
                         st.warning(f"Missing {field}. Please update the information in AASHTOWare before continuing.")
                     else:
                         st.error(f"{field} Required")
-
             else:
                 st.session_state["details_complete"] = True
                 st.session_state["project_details"] = required_fields
@@ -707,4 +691,3 @@ def _render_original_form(is_awp: bool):
                     key=f"details_submit_{version}_done",
                     disabled=True,
                 )
-

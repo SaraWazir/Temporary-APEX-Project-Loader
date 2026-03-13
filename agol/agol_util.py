@@ -225,7 +225,7 @@ def aashtoware_geometry(awp_contract_id):
 
     geom_sel = select_record(
         url=st.session_state['aashtoware_url'],
-        layer= st.session_state['geometry_layer'],
+        layer= st.session_state['awp_geometry_layer'],
         id_field = "CONTRACT_Id",
         id_value=st.session_state['awp_id'],
         fields = "*"

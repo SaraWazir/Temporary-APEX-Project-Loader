@@ -1,6 +1,8 @@
 import streamlit as st
+import re
 from agol.agol_district_queries import run_district_queries
-from util.read_only_util import ro_widget
+from util.read_only_util import ro_widget, ro_widget_taglist  # <- added ro_widget_taglist
+from util.input_util import fmt_string
 from agol.agol_util import (
     get_multiple_fields,
     select_record
@@ -167,21 +169,9 @@ def impacted_comms_select(container=None, label="Select community:"):
 
 
 
-# =============================================================================
-# FORM SUBSECTION: AASHTOWARE PROJECT SELECTOR (DROPDOWN + STATE SYNC)
-# =============================================================================
-# - Pulls AASHTOWare project rows from the AWP FeatureServer via get_multiple_fields()
-# - Builds label <-> Id mappings for user-friendly selection + authoritative lookup
-# - Uses a versioned widget key (form_version) to prevent Streamlit widget state bleed
-# - Syncs the selectbox display to an existing awp_guid / aashto_id when returning to the page
-# - on_change callback updates ONLY selection state (record loading is handled elsewhere)
-# =============================================================================
 def aashtoware_project():
     # ---------------------------------------------------------------------
     # Helper: format ConstructionYears for display
-    #   None / ""      -> ""
-    #   "CY2024,CY2025"-> "[CY2024, CY2025]"
-    #   ["CY2024", ...]-> "[CY2024, ...]"
     # ---------------------------------------------------------------------
     def _format_construction_years(cy):
         if not cy:
@@ -192,14 +182,22 @@ def aashtoware_project():
             parts = [p.strip() for p in str(cy).split(",") if p.strip()]
         return f"{', '.join(parts)}" if parts else ""
 
+    # NEW: parse years field -> set for membership test
+    def _parse_years_to_set(cy):
+        if not cy:
+            return set()
+        if isinstance(cy, (list, tuple, set)):
+            return {str(x).strip().upper() for x in cy if x and str(x).strip()}
+        return {p.strip().upper() for p in str(cy).split(",") if p.strip()}
+
     aashtoware = st.session_state["aashtoware_url"]
 
     # -------------------------------------------------------------------------
-    # Pull projects (same data pull you referenced)
+    # Pull projects
     # -------------------------------------------------------------------------
     projects = get_multiple_fields(
         aashtoware,
-        st.session_state["contracts_layer"],
+        st.session_state["awp_contracts_layer"],
         ["ProjectName", "IRIS", "ConstructionYears", "Id"]
     ) or []
 
@@ -210,22 +208,35 @@ def aashtoware_project():
         if p.get("Id")
     }
 
-    
+    # -------------------------------------------------------------------------
+    # Optional filter by URL/session param set_year (e.g., "CY2026")
+    # -------------------------------------------------------------------------
+    set_year_raw = st.session_state.get("set_year", None)
+    set_year = str(set_year_raw).strip().upper() if set_year_raw else None
+
+    def _passes_set_year_filter(p):
+        if not set_year:
+            return True
+        years = _parse_years_to_set(p.get("ConstructionYears"))
+        return set_year not in years
+
     # Sort projects by ProjectName (case-insensitive), blank names go last
     projects_sorted = sorted(
-        (p for p in projects if p.get("Id")),
-        key=lambda p: ((p.get("ProjectName") or "").strip().lower() == "", (p.get("ProjectName") or "").strip().lower())
+        (p for p in projects if p.get("Id") and _passes_set_year_filter(p)),
+        key=lambda p: (
+            (p.get("ProjectName") or "").strip().lower() == "",
+            (p.get("ProjectName") or "").strip().lower()
+        )
     )
 
     label_to_gid = {
         f"{p.get('Id', '')} – {p.get('ProjectName', '')}": p.get("Id")
         for p in projects_sorted
     }
-
     gid_to_label = {gid: label for label, gid in label_to_gid.items()}
-    placeholder_label = "— Select a project —"
-    labels = [placeholder_label] + list(label_to_gid.keys())  # already sorted by ProjectName
 
+    placeholder_label = "— Select a project —"
+    labels = [placeholder_label] + list(label_to_gid.keys())  # already sorted
 
     # -------------------------------------------------------------------------
     # Widget key management (versioned keys prevent Streamlit state bleed)
@@ -238,12 +249,10 @@ def aashtoware_project():
     # ------------------------------------------------------------
     active_gid = st.session_state.get("awp_guid") or st.session_state.get("aashto_id")
     active_label = gid_to_label.get(active_gid) if active_gid else None
-
     if active_gid and active_label:
         st.session_state["aashto_id"] = active_gid
         st.session_state["aashto_label"] = active_label
         st.session_state["aashto_selected_project"] = active_label
-
         # NEW: also seed the construction years display when restoring
         st.session_state["awp_selected_construction_years"] = gid_to_cy.get(active_gid, "")
 
@@ -251,23 +260,28 @@ def aashtoware_project():
     # 2) Seed widget display value WITHOUT using index=
     # ------------------------------------------------------------
     desired_label = st.session_state.get(widget_key)
-
     if desired_label not in labels:
         desired_label = st.session_state.get("aashto_label")
     if desired_label not in labels:
         desired_label = active_label
     if desired_label not in labels:
         desired_label = placeholder_label
-
     if st.session_state.get(widget_key) not in labels:
         st.session_state[widget_key] = desired_label
 
     # ------------------------------------------------------------
-    # 3) Callback: ONLY update selection state
-    #    + NEW: update read-only ConstructionYears display
+    # 3) Callback: ONLY update selection state + ensure consistent refresh
     # ------------------------------------------------------------
     def _on_project_change():
         selected_label = st.session_state[widget_key]
+
+        # Clear AWP values first to prevent showing stale fields if reload is delayed
+        for k in [k for k in st.session_state.keys() if k.startswith("awp_")
+                  and k not in ("awp_fields", "awp_contracts_layer")]:
+            try:
+                st.session_state.pop(k)
+            except Exception:
+                pass
 
         if selected_label == placeholder_label:
             st.session_state["aashto_label"] = None
@@ -275,20 +289,25 @@ def aashtoware_project():
             st.session_state["aashto_selected_project"] = None
             st.session_state["awp_guid"] = None
             st.session_state["awp_update"] = "No"
-
-            # NEW: clear the display field
             st.session_state["awp_selected_construction_years"] = ""
+            st.session_state["awp_last_loaded_gid"] = None
             return
 
         selected_gid = label_to_gid.get(selected_label)
+
+        # Keep all three ids in sync immediately (important!)
         st.session_state["aashto_label"] = selected_label
         st.session_state["aashto_id"] = selected_gid
         st.session_state["aashto_selected_project"] = selected_label
         st.session_state["awp_guid"] = selected_gid
+        st.session_state["awp_id"] = selected_gid            # <-- eager sync
         st.session_state["awp_update"] = "Yes"
 
-        # NEW: set the display field from the same data pull
+        # Display field from same data pull
         st.session_state["awp_selected_construction_years"] = gid_to_cy.get(selected_gid, "")
+
+        # Force the loader below to run for the new gid
+        st.session_state["awp_last_loaded_gid"] = None
 
     # Render widget (NO index= here)
     st.selectbox(
@@ -299,27 +318,26 @@ def aashtoware_project():
     )
 
     # -------------------------------------------------------------------------
-    # NEW: Ensure display value is populated on programmatic restores / reruns
+    # Ensure display value is populated on programmatic restores / reruns
     # -------------------------------------------------------------------------
     selected_gid = st.session_state.get("aashto_id")
     if selected_gid and st.session_state.get("awp_selected_construction_years") is None:
         st.session_state["awp_selected_construction_years"] = gid_to_cy.get(selected_gid, "")
     elif selected_gid and not st.session_state.get("awp_selected_construction_years"):
-        # If empty string, keep it (means no years). If missing key, repopulate.
         st.session_state["awp_selected_construction_years"] = gid_to_cy.get(selected_gid, "")
 
     # -------------------------------------------------------------------------
-    # NEW: Read-only display ABOVE the project form (right after selectbox)
+    # Read-only Construction Years tag list
     # -------------------------------------------------------------------------
-    ro_widget(
+    ro_widget_taglist(
         key="awp_selected_construction_years",
         label="Existing Construction Year(s) in APEX",
-        value=fmt_string(st.session_state.get("awp_selected_construction_years", "")),
+        values=st.session_state.get("awp_selected_construction_years", ""),
     )
     st.write("")  # spacer
 
     # -------------------------------------------------------------------------
-    # 4) LOAD FORM WHEN GUID CHANGES (UNCHANGED)
+    # 4) LOAD FORM WHEN GUID CHANGES
     # -------------------------------------------------------------------------
     last_loaded = st.session_state.get("awp_last_loaded_gid")
     if selected_gid and selected_gid != last_loaded:
@@ -352,23 +370,80 @@ def aashtoware_project():
             # impacted communities (legacy/shared mirror key used elsewhere)
             "impact_comm",
         ]
-
+        # Fix: ensure date-like fields are None; all others clear to ""
+        date_like = {"award_date", "anticipated_start", "anticipated_end", "tenadd"}  # <-- fixed "anticipated_start"
         for k in user_keys:
-            st.session_state[k] = "" if k not in ["award_date", "antcipated_start", "anticipated_end", "tenadd"] else None
+            st.session_state[k] = None if k in date_like else ""
 
         # Load full AWP record
-        record = select_record(aashtoware, 0, "Id", selected_gid)
+        record = select_record(
+            url = st.session_state['aashtoware_url'], 
+            layer = st.session_state['awp_contracts_layer'], 
+            id_field = "Id", 
+            id_value = selected_gid,
+            return_geometry = False)
         if record and "attributes" in record[0]:
             attrs = record[0]["attributes"]
+
+            # 1) Keep your generic write-through for all attributes
             for k, v in attrs.items():
                 st.session_state[f"awp_{k}".lower()] = v
 
-        st.session_state["awp_last_loaded_gid"] = selected_gid
-        st.session_state["awp_selection_changed"] = True
+            # 2) ALSO populate the friendly keys the form expects
+            #    (these are the ones referenced via AWP_FIELDS in details_form.py)
+            _awp_to_friendly = {
+                # Names / descriptions
+                "ProjectName": "awp_proj_name",
+                "Description": "awp_proj_desc",
+                # Phase / funding / practice
+                "Phase": "awp_phase",
+                "FundingType": "awp_fund_type",
+                "ProjectPractice": "awp_proj_prac",
+                # IDs
+                "IRIS": "awp_iris",
+                "STIP": "awp_stip",
+                "FederalProjectNumber": "awp_fed_proj_num",
+                # Dates / years
+                "AnticipatedStart": "awp_anticipated_start",
+                "AnticipatedEnd": "awp_anticipated_end",
+                "AwardDate": "awp_award_date",
+                "AwardFiscalYear": "awp_award_fiscal_year",
+                "TentativeAdvertiseDate": "awp_tenadd",
+                # Currency
+                "AwardedAmount": "awp_awarded_amount",
+                "CurrentContractAmount": "awp_current_contract_amount",
+                "AmountPaidToDate": "awp_amount_paid_to_date",
+                # Contact
+                "ContactName": "awp_contact_name",
+                "ContactRole": "awp_contact_role",
+                "ContactEmail": "awp_contact_email",
+                "ContactPhone": "awp_contact_phone",
+                # Web
+                "ProjectWebsite": "awp_proj_web",
+                # Route (if present in AWP)
+                "RouteId": "awp_route_id",
+                "RouteName": "awp_route_name",
+            }
+            for awp_attr, friendly_key in _awp_to_friendly.items():
+                if awp_attr in attrs:
+                    st.session_state[friendly_key] = attrs[awp_attr]
 
-        # Reset All Construction Year Defaults
+            # Ensure awp_id is present even if the attributes omit "Id"
+            st.session_state.setdefault("awp_id", selected_gid)
+
+            st.session_state["awp_last_loaded_gid"] = selected_gid
+            st.session_state["awp_selection_changed"] = True
+
+        # ---------------------------------------------------------------------
+        # Reset Construction Year widget keys (unchanged behavior)
+        # ---------------------------------------------------------------------
         for k in [k for k in st.session_state if k.startswith("awp_widget_key_construction_year_")]:
-            st.session_state[k] = None
+            if set_year:
+                sy = str(set_year).strip().upper()
+                st.session_state[k] = sy  # widget key value
+                st.session_state["construction_year"] = sy  # mirror business key
+            else:
+                st.session_state[k] = None
 
 
 
