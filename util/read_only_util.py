@@ -17,44 +17,32 @@ import html
 _RO_CSS = """
 <style>
 .ro-field { margin-bottom: 0.75rem; }
-
-/* CHANGED: label text color -> #31333F */
-.ro-label { font-size: 0.875rem; color: #31333F; margin-bottom: 0.25rem; }
-
+.ro-label { font-size: 0.875rem; color: #6b7280; margin-bottom: 0.25rem; }
 .ro-box {
   border: 1px solid #e5e7eb;
   background: #f9fafb;
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
-
-  /* CHANGED: standard text color -> #31333F */
-  color: #31333F;
-
+  color: #111827;
   font-size: 0.95rem;
   min-height: 38px;
   display: flex; align-items: center;
   word-break: break-word;
 }
-
 .ro-box.mono { font-variant-numeric: tabular-nums; }
 .ro-box .placeholder { color: #9ca3af; }
-
 .ro-box-textarea {
   border: 1px solid #e5e7eb;
   background: #f9fafb;
   border-radius: 0.375rem;
   padding: 0.5rem 0.75rem;
-
-  /* CHANGED: textarea standard text color -> #31333F */
-  color: #31333F;
-
+  color: #111827;
   font-size: 0.95rem;
   min-height: 160px;
   white-space: pre-wrap;
   word-break: break-word;
   display: block;
 }
-
 .ro-box-textarea .placeholder { color: #9ca3af; }
 </style>
 """
