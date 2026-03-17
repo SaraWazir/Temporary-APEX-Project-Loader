@@ -159,7 +159,26 @@ def fmt_int_or_none(val):
     # Reject bool because bool is subclass of int.
     if isinstance(val, bool):
         return None
-    return val if isinstance(val, int) else None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        # Accept floats (e.g., 678.0) and coerce to int
+        try:
+            return int(val)
+        except Exception:
+            return None
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s.lower() in {"none", "null", "nan", "n/a", "na"}:
+            return None
+        # Remove grouping commas and currency symbols, keep digits, '.', and sign
+        s2 = s.replace(",", "").replace("$", "").strip()
+        try:
+            f = float(s2)
+            return int(f)
+        except Exception:
+            return None
+    return None
 
 
 import re
