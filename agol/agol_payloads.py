@@ -505,11 +505,11 @@ def location_payload():
                 {
                     "attributes": {
                         "Location_AWP_Proj_Name": st.session_state.get("awp_proj_name", None),
-                        "Location_Area_Proj_Name": st.session_state.get("proj_name", None),
-                        "Location_Area_DOT_PF_Region": st.session_state.get("region_string", None),
-                        "Location_Area_Borough_Census_Area": st.session_state.get("borough_string", None),
-                        "Location_Area_Senate_District": st.session_state.get("senate_string", None),
-                        "Location_Area_House_District": st.session_state.get("house_string", None),
+                        "Location_Proj_Name": st.session_state.get("proj_name", None),
+                        "Location_DOT_PF_Region": st.session_state.get("region_string", None),
+                        "Location_Borough_Census_Area": st.session_state.get("borough_string", None),
+                        "Location_Senate_District": st.session_state.get("senate_string", None),
+                        "Location_House_District": st.session_state.get("house_string", None),
                         "parentglobalid": st.session_state.get("apex_globalid", None)
                     },
                     "geometry": {
