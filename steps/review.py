@@ -51,7 +51,7 @@ def review_information():
 
 
     # --- Map of Location ---
-    header_with_edit("PROJECT LOCATION", target_step=3, help="Edit Project Loaction")
+    header_with_edit("PROJECT LOCATION", target_step=2, help="Edit Project Loaction")
 
     if "selected_point" in st.session_state and st.session_state["selected_point"]:
         # Points: expecting a list of [lon, lat] pairs
@@ -151,7 +151,7 @@ def review_information():
     st.write("")
 
     # --- Project Information ---
-    header_with_edit("PROJECT INFORMATION", target_step=2, help="Edit all project information")
+    header_with_edit("PROJECT INFORMATION", target_step=1, help="Edit all project information")
 
     # Identification
     with st.expander("Identification", expanded=True):
