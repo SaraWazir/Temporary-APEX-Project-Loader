@@ -82,6 +82,7 @@ def init_session_state():
         'version': None,
         'guid': None,
         'set_year': None,
+        'init_run': True,
         "loader_step": 1,
         "manager_tab": None,
         "is_awp": False,

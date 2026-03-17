@@ -73,7 +73,7 @@ def run_loader_app():
 
             ---
 
-            **Step 2: Upload Geospatial Data**  
+            **Step 2: Upload Project Footprint**  
             Select the project type (**Site**, **Route**, or **Boundary**) and upload or create the corresponding geometry.  
             Choose the upload method that best matches your data (shapefile, coordinates, or map input).  
             Verify that the geometry is correct and reflects your project scope.

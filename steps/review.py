@@ -100,7 +100,7 @@ def review_information():
             coords,
             feature_type="polyline",
             color=BLUE,
-            weight=8,
+            weight=5,
             opacity=1
         ).add_to(m)
 
@@ -256,5 +256,3 @@ def review_information():
         col1.markdown(f"**Borough/Census Area:** {st.session_state.get('borough_string','')}")
         col2.markdown(f"**DOT&PF Region:** {st.session_state.get('region_string','')}")
     
-    
-    st.write("")

@@ -3,8 +3,8 @@
 # =============================================================================
 # Purpose:
 # Renders a two-mode project details form:
-#  1) AASHTOWare Database (read-only display of values pulled into session_state)
-#  2) User Input (editable Streamlit widgets)
+# 1) AASHTOWare Database (read-only display of values pulled into session_state)
+# 2) User Input (editable Streamlit widgets)
 # Key behaviors:
 # - Source-specific widget keys to prevent value bleed between AWP vs UI
 # - Read-only “widgets” rendered via HTML/CSS while still persisting values
@@ -91,7 +91,11 @@ _PERSISTED_KEYS = [
     "aashto_id",
     "aashto_label",
     "aashto_selected_project",
-]
+
+    # ✅ Persist the user's last-selected year so defaults never "flip/flop"
+    "__cy_user",
+]  # ← earlier addition (kept)  [1](https://mbakerintl-my.sharepoint.com/personal/charles_ross_mbakerintl_com/Documents/Microsoft%20Copilot%20Chat%20Files/details_form.py)
+
 _SOURCE_SNAPSHOT_KEY = {
     "AASHTOWare Database": "saved_awp",
     "User Input": "saved_user",
@@ -142,18 +146,45 @@ def _watch_and_reset():
 # FORM ENTRYPOINT: SOURCE SELECTION + ROUTING
 # =============================================================================
 def project_details_form():
+    # Ensure base keys exist
     st.session_state.setdefault("form_version", 0)
     st.session_state.setdefault("prev_info_option", None)
     st.session_state.setdefault("info_option", None)
+    st.session_state.setdefault("__last_valid_info_option", None)  # ← track last valid segmented selection  [1](https://mbakerintl-my.sharepoint.com/personal/charles_ross_mbakerintl_com/Documents/Microsoft%20Copilot%20Chat%20Files/details_form.py)
+
+    # If the last submitted type exists, preload its snapshot before drawing UI
+    last_type = st.session_state.get("details_type")
+    if last_type in ("AASHTOWare Database", "User Input"):
+        if st.session_state.get("__sticky_restored") != last_type:
+            _preload_from_snapshot(last_type)
+            st.session_state["info_option"] = last_type
+            st.session_state["prev_info_option"] = last_type
+            st.session_state["__sticky_restored"] = last_type
 
     OPTIONS = ["AASHTOWare Database", "User Input"]
 
-    prior_choice = st.session_state.get("details_type")
-    if (
-        prior_choice in OPTIONS
-        and (st.session_state.get("info_option") is None or st.session_state.get("info_option") == "")
-    ):
-        st.session_state["info_option"] = prior_choice
+    # --- REPAIR/SEED segmented control BEFORE render --------------------------
+    def _pick_valid_info_option():
+        # Priority: current info_option, details_type, prev_info_option, last valid cache, fallback
+        current = st.session_state.get("info_option")
+        if current in OPTIONS:
+            return current
+        dt = st.session_state.get("details_type")
+        if dt in OPTIONS:
+            return dt
+        prev = st.session_state.get("prev_info_option")
+        if prev in OPTIONS:
+            return prev
+        cached = st.session_state.get("__last_valid_info_option")
+        if cached in OPTIONS:
+            return cached
+        return OPTIONS[0]
+
+    # Force a valid value so Streamlit can NEVER render the control blank
+    desired = _pick_valid_info_option()
+    st.session_state["info_option"] = desired
+    st.session_state["__last_valid_info_option"] = desired
+    # --------------------------------------------------------------------------
 
     st.markdown("###### CHOOSE PROJECT SOURCE\n", unsafe_allow_html=True)
     selection = st.segmented_control(
@@ -165,6 +196,12 @@ def project_details_form():
     current_option = selection
     st.session_state["current_option"] = selection
     previous_option = st.session_state.get("prev_info_option")
+
+    # Always keep the last valid selection cached
+    if current_option in OPTIONS:
+        st.session_state["__last_valid_info_option"] = current_option
+
+    # Handle mode switch: clear working keys (snapshots are retained)
     if current_option is not None and current_option != previous_option:
         if current_option == "User Input":
             for k in list(st.session_state.keys()):
@@ -173,30 +210,54 @@ def project_details_form():
             st.session_state["aashto_id"] = ""
             st.session_state["aashto_label"] = ""
             st.session_state["aashto_selected_project"] = ""
+            # Do NOT nuke segmented-control state or its cache
+            EXEMPT = {"info_option", "__last_valid_info_option", "prev_info_option", "details_type"}  # ← new  [1](https://mbakerintl-my.sharepoint.com/personal/charles_ross_mbakerintl_com/Documents/Microsoft%20Copilot%20Chat%20Files/details_form.py)
             for k in _PERSISTED_KEYS:
+                if k in EXEMPT:
+                    continue
                 if not k.startswith("awp_"):
                     st.session_state[k] = ""
         st.session_state["prev_info_option"] = current_option
         st.session_state["details_complete"] = False
         st.session_state["form_version"] += 1
 
+    # Preload snapshot of the active option so defaults stick on return
     if current_option:
         _preload_from_snapshot(current_option)
 
     if current_option == "AASHTOWare Database":
         st.markdown("###### SELECT PROJECT AASHTOWARE PROJECT\n", unsafe_allow_html=True)
+
+        # Keep AWP dropdown aligned to last saved selection
+        version = st.session_state.get("form_version", 0)
+        awp_widget_key = f"awp_project_select_{version}"
+        saved_label = st.session_state.get("aashto_label") or st.session_state.get("aashto_selected_project")
+        if saved_label:
+            st.session_state[awp_widget_key] = saved_label
+
+        # Backfill AWP ids from aashto_id if needed
+        if not st.session_state.get("awp_id") and st.session_state.get("aashto_id"):
+            st.session_state["awp_id"] = st.session_state["aashto_id"]
+        if not st.session_state.get("awp_guid") and st.session_state.get("aashto_id"):
+            st.session_state["awp_guid"] = st.session_state["aashto_id"]
+
         with st.container(border=True):
             aashtoware_project()
+
+        # Mark unsaved when key AWP identifiers change
         for k in ("awp_id", "aashto_selected_project"):
             curr = st.session_state.get(k)
             prev_k = f"__last__{k}"
             if prev_k in st.session_state and st.session_state[prev_k] != curr:
                 _mark_unsaved()
             st.session_state[prev_k] = curr
+
         st.write('')
         _render_original_form(is_awp=True)
+
     elif current_option == "User Input":
         _render_original_form(is_awp=False)
+
     else:
         st.info("Please choose a source method above to begin.")
 
@@ -249,7 +310,6 @@ def _render_original_form(is_awp: bool):
                 key=widget_key("proj_name", version, is_awp),
                 help="Provide the project name that will be displayed publicly.",
             )
-
         st.write("")
 
         # ---------------------------------------------------------------------
@@ -257,62 +317,92 @@ def _render_original_form(is_awp: bool):
         # ---------------------------------------------------------------------
         st.markdown("<h5>2. CONSTRUCTION YEAR, PHASE, & IDS</h5>", unsafe_allow_html=True)
         col1, col2 = st.columns(2)
-        with col1:
-            options = [str(o) if o is not None else "" for o in st.session_state["construction_years"]]
-            saved = st.session_state.get("construction_year", "")
-            saved_str = str(saved) if saved is not None else ""
 
-            # Existing AWP years for currently selected project (may be "")
+        with col1:
+            # --- Construction Year select (robust defaulting) ---
+            options = [str(o) if o is not None else "" for o in st.session_state["construction_years"]]
+
+            # Normalize helper (compare uppercase/trim; display original)
+            norm = lambda s: str(s).strip().upper() if s is not None else ""
+            options_norm = {norm(o): o for o in options}
+
+            # Prefer user's last choice (__cy_user), else saved construction_year
+            cy_user_raw = st.session_state.get("__cy_user")
+            cy_user = options_norm.get(norm(cy_user_raw), "")  # canonical option string if present
+
+            saved_raw = st.session_state.get("construction_year", "")
+            saved = options_norm.get(norm(saved_raw), "")      # canonical option string if present
+
+            preferred_saved = cy_user or saved
+
+            # Existing AWP years (may be comma-separated string or list)
             existing_raw = st.session_state.get("awp_selected_construction_years", "")
             if isinstance(existing_raw, str):
-                existing = {v.strip() for v in existing_raw.split(",") if v.strip()}
+                existing_set = {v.strip() for v in existing_raw.split(",") if v.strip()}
             elif isinstance(existing_raw, (list, tuple, set)):
-                existing = {str(v).strip() for v in existing_raw}
+                existing_set = {str(v).strip() for v in existing_raw}
             else:
-                existing = set()
+                existing_set = set()
 
-            # Exclude already-used years for the selected AWP project
-            filtered_options = [opt for opt in options if opt not in existing]
+            # Filter out existing years by normalized match
+            existing_norm = {norm(v) for v in existing_set}
+            filtered_options = [o for o in options if norm(o) not in existing_norm]
             if not filtered_options:
                 filtered_options = [""]
 
-            # ---- MINIMAL SAFE FIX START ----
-            # Compute intended default choice (formerly used to build index)
-            if saved_str in filtered_options:
-                default_choice = saved_str
-            elif "" in filtered_options:
-                default_choice = ""
-            else:
-                default_choice = filtered_options[0]
+            # Ensure the user's preferred value remains selectable even if normally filtered out
+            if preferred_saved and preferred_saved not in filtered_options:
+                filtered_options = [preferred_saved] + [o for o in filtered_options if o != preferred_saved]
 
-            # Respect URL/session param set_year (e.g., "CY2026")
+            # Default choice priority:
+            # 1) __cy_user (if valid)
+            # 2) saved construction_year
+            # 3) set_year (if valid and user hasn't provided __cy_user)
+            # 4) first available / ""
+            default_choice = preferred_saved if preferred_saved in filtered_options else (filtered_options[0] if filtered_options else "")
+
             set_year_raw = st.session_state.get("set_year")
-            set_year = str(set_year_raw).strip().upper() if set_year_raw else None
-            if set_year:
-                if set_year in options:
-                    if set_year in filtered_options:
-                        default_choice = set_year
-                    # else: keep default_choice; year already used by selected AWP project
-                else:
-                    st.info(
-                        f"The input year '{set_year}' does not match a construction year for this work."
-                    )
+            set_year_norm = norm(set_year_raw) if set_year_raw else None
+            if set_year_norm and not cy_user:
+                # match set_year against options
+                set_year_canon = options_norm.get(set_year_norm)
+                if set_year_canon and set_year_canon in filtered_options:
+                    default_choice = set_year_canon
+                elif set_year_norm not in options_norm:
+                    st.info(f"The input year '{set_year_raw}' does not match a construction year for this work.")
 
-            # Pre-seed the *widget key* and render WITHOUT index=...
+            # Seed/repair widget state and compute index so Streamlit can't render blank
             wk = widget_key("construction_year", version, is_awp)
-            if wk not in st.session_state:
+            current_val = st.session_state.get(wk)
+
+            # If current value is missing/blank/invalid, force the computed default
+            if (
+                current_val is None
+                or (isinstance(current_val, str) and current_val.strip() == "")
+                or (current_val not in filtered_options)
+            ):
                 st.session_state[wk] = default_choice
+
+            # Safety: derive index from the (possibly corrected) state value
+            try:
+                idx = filtered_options.index(st.session_state[wk])
+            except ValueError:
+                idx = 0
 
             selected_cy = st.selectbox(
                 "Construction Year ⮜",
                 filtered_options,
+                index=idx,              # Guarantees a visible selection
                 key=wk,
                 help="The project’s assigned year. Continuing projects must also receive a new year.",
             )
 
             # Mirror to business key used elsewhere
             st.session_state["construction_year"] = selected_cy
-            # ---- MINIMAL SAFE FIX END ----
+
+            # Keep the user's latest choice in __cy_user for future returns
+            if selected_cy:
+                st.session_state["__cy_user"] = str(selected_cy)
 
         if is_awp:
             with col2:
@@ -330,6 +420,9 @@ def _render_original_form(is_awp: bool):
                     options=(st.session_state['phase_list']),
                     is_awp=is_awp,
                 )
+
+        st.write("")
+        st.write("")
 
         # ---------------------------------------------------------------------
         # SECTION 3
@@ -616,8 +709,8 @@ def _render_original_form(is_awp: bool):
         # SUBMIT
         # ---------------------------------------------------------------------
         _watch_and_reset()
-        submitted = bool(st.session_state.get("details_complete", False))
 
+        submitted = bool(st.session_state.get("details_complete", False))
         btn_ph = st.empty()
 
         def _render_submit_button(is_done: bool):
@@ -658,6 +751,10 @@ def _render_original_form(is_awp: bool):
                 st.session_state["details_complete"] = True
                 st.session_state["project_details"] = required_fields
                 st.session_state["details_type"] = st.session_state.get("current_option")
+
+                # Persist user's selected year so it becomes the default on return
+                if st.session_state.get("construction_year"):
+                    st.session_state[" "] = str(st.session_state["construction_year"])
 
                 if not is_awp:
                     UI_TRANSFORM_MAP = {

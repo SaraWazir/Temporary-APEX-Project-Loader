@@ -23,10 +23,12 @@ def run_manager_app():
         guid = st.session_state.get("guid")
         url = st.session_state.get("apex_url")
         layer = st.session_state.get("projects_layer")
+
         if not guid or not url or layer is None:
             st.session_state["project_record"] = None
             st.session_state["objectid"] = None
             return
+
         try:
             rec = select_record(
                 url,
@@ -50,6 +52,12 @@ def run_manager_app():
         if isinstance(v, (list, tuple)):
             return v[0] if v else None
         return v
+
+    # ⬇️ Normalize any existing GUID in session_state to lowercase
+    def normalize_guid_in_state():
+        g = st.session_state.get("guid")
+        if isinstance(g, str):
+            st.session_state["guid"] = g.lower()
 
     def _reset_per_project_state():
         """
@@ -111,8 +119,10 @@ def run_manager_app():
         """
         if not rec_list or not isinstance(rec_list, list):
             raise ValueError("Empty APEX response")
+
         feature = rec_list[0]
         attrs = feature.get("attributes", {})
+
         st.session_state["apex_guid"] = attrs.get("globalid")
         st.session_state['apex_awp_name'] = attrs.get('AWP_Proj_Name')
         st.session_state['apex_proj_name'] = attrs.get('Proj_Name')
@@ -133,6 +143,7 @@ def run_manager_app():
             return
 
         globalids, objectids, geoms = [], [], []
+
         for feature in rec_list:
             if not isinstance(feature, dict):
                 continue
@@ -194,14 +205,14 @@ def run_manager_app():
             apex_rec = select_record(
                 url, layer, "globalid", guid,
                 fields=[
-                    "globalid", 
-                    "objectid", 
-                    "AWP_Contract_ID", 
-                    "Proj_Type", 
-                    "AWP_Proj_Name", 
-                    "Proj_Name", 
+                    "globalid",
+                    "objectid",
+                    "AWP_Contract_ID",
+                    "Proj_Type",
+                    "AWP_Proj_Name",
+                    "Proj_Name",
                     "Database_Status"
-                    ],
+                ],
                 return_geometry=True
             )
             _set_apex_context_from_record(apex_rec)
@@ -259,6 +270,9 @@ def run_manager_app():
     # (Optional) initialize debug counter once; don't reset on every rerun
     st.session_state.setdefault('debug', 0)
 
+    # ⬇️ Normalize any pre-existing GUID in session state
+    normalize_guid_in_state()
+
     # ─────────────────────────────────────────────────────────────
     # Sync GUID from URL (if present) into session_state and refresh record
     # ─────────────────────────────────────────────────────────────
@@ -267,13 +281,15 @@ def run_manager_app():
         qp = st.query_params
         if qp and "guid" in qp:
             guid_param = normalize_qp_value(qp.get("guid"))
+            if isinstance(guid_param, str):
+                guid_param = guid_param.lower()  # ✅ normalize before compare
     except Exception:
         guid_param = None
 
     if guid_param and guid_param != st.session_state.get("guid"):
-        st.session_state["guid"] = guid_param
+        st.session_state["guid"] = guid_param  # already lowercased above
         update_project_record()
-        # APEX context will be loaded in the next block when _last_guid diff is detected
+        _remove_guid_from_url()  # ✅ consume the param to prevent loop
         st.rerun()
 
     # ─────────────────────────────────────────────────────────────
@@ -304,6 +320,7 @@ def run_manager_app():
         if not projects_url or projects_layer is None:
             st.error("Missing `apex_url` and/or `projects_layer` in session state. Initialize app session before opening Manager.")
             return
+
         try:
             projects = get_multiple_fields(projects_url, projects_layer, ["Proj_Name", "globalid"])
         except Exception as e:
@@ -324,7 +341,8 @@ def run_manager_app():
     def on_select_project():
         label = st.session_state.get("project_selector")
         if label and label != placeholder_label:
-            st.session_state["guid"] = label_to_gid.get(label)
+            gid = label_to_gid.get(label)
+            st.session_state["guid"] = str(gid).lower() if gid is not None else None  # ensure lowercase
             update_project_record()
         else:
             st.session_state["guid"] = None
@@ -355,11 +373,10 @@ def run_manager_app():
                         for p in projects
                         if p.get("Proj_Name") and p.get("globalid")
                     }
-
                 guid = st.session_state.get("guid")
                 if guid:
                     current_label = next(
-                        (label for label, gid in label_to_gid.items() if gid == guid),
+                        (label for label, gid in label_to_gid.items() if gid == guid or str(gid).lower() == guid),
                         None
                     )
             except Exception:
@@ -427,7 +444,7 @@ def run_manager_app():
             def _tab_communities():
                 with st.container(border=True):
                     st.info("Communities Management Tab Under Development")
-                    #manage_impacted_communities()
+                #manage_impacted_communities()
 
             def _tab_deployment():
                 st.info("Deployment Management Tab Under Development")

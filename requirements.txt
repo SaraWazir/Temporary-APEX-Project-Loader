@@ -6,3 +6,4 @@ shapely
 numpy
 pandas
 streamlit_scroll_to_top
+streamlit-option-menu

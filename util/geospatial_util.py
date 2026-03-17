@@ -399,6 +399,140 @@ def center_of_geometry(
 
 
 
+def snap_bop_eop_to_route(route_geom, bop_lonlat, eop_lonlat):
+    """
+    Snap BOP/EOP to the closest segment of the given AGOL route geometry.
+
+    Inputs:
+      - route_geom: ArcGIS polyline geometry; supports:
+          * {"paths": [[[lon, lat], ...], ...]}
+          * [[lon, lat], ...]  (single part)
+          * [ [[lon,lat],...], [[lon,lat],...] ]  (multi-part)
+      - bop_lonlat: [lon, lat]
+      - eop_lonlat: [lon, lat]
+
+    Returns:
+      (snapped_bop_lonlat, snapped_eop_lonlat, chosen_part_coords)
+      chosen_part_coords is a single polyline part as [[lon,lat], ...]
+    """
+    # ---- normalize into list of parts ----
+    parts = []
+    if isinstance(route_geom, dict) and "paths" in route_geom:
+        for p in route_geom.get("paths") or []:
+            coords = []
+            for xy in p or []:
+                try:
+                    coords.append([float(xy[0]), float(xy[1])])
+                except Exception:
+                    continue
+            if len(coords) >= 2:
+                parts.append(coords)
+    elif isinstance(route_geom, (list, tuple)):
+        # single path [[lon,lat], ...] or multi-part [ [[lon,lat],...], ... ]
+        if all(isinstance(v, (list, tuple)) and len(v) == 2 for v in route_geom):
+            coords = []
+            for xy in route_geom:
+                try:
+                    coords.append([float(xy[0]), float(xy[1])])
+                except Exception:
+                    continue
+            if len(coords) >= 2:
+                parts.append(coords)
+        else:
+            for p in route_geom:
+                if not isinstance(p, (list, tuple)):
+                    continue
+                coords = []
+                for xy in p:
+                    try:
+                        coords.append([float(xy[0]), float(xy[1])])
+                    except Exception:
+                        continue
+                if len(coords) >= 2:
+                    parts.append(coords)
+
+    if not parts:
+        return bop_lonlat, eop_lonlat, []
+
+    # ---- choose the best part minimizing sum of distances to bop/eop ----
+    from shapely.geometry import LineString, Point  # you said you'll handle imports
+    from shapely.ops import nearest_points
+
+    try:
+        bpt = Point(float(bop_lonlat[0]), float(bop_lonlat[1]))
+        ept = Point(float(eop_lonlat[0]), float(eop_lonlat[1]))
+    except Exception:
+        return bop_lonlat, eop_lonlat, (parts[0] if parts else [])
+
+    best_idx, best_sum = None, float("inf")
+    for i, p in enumerate(parts):
+        ln = LineString([(c[0], c[1]) for c in p])
+        try:
+            nb = nearest_points(ln, bpt)[0]
+            ne = nearest_points(ln, ept)[0]
+            dsum = nb.distance(bpt) + ne.distance(ept)
+            if dsum < best_sum:
+                best_sum, best_idx = dsum, i
+        except Exception:
+            continue
+
+    if best_idx is None:
+        return bop_lonlat, eop_lonlat, (parts[0] if parts else [])
+
+    chosen = parts[best_idx]
+    ln = LineString([(c[0], c[1]) for c in chosen])
+
+    try:
+        nb = nearest_points(ln, bpt)[0]
+        ne = nearest_points(ln, ept)[0]
+        snapped_bop = [float(nb.x), float(nb.y)]
+        snapped_eop = [float(ne.x), float(ne.y)]
+    except Exception:
+        snapped_bop, snapped_eop = bop_lonlat, eop_lonlat
+
+    return snapped_bop, snapped_eop, chosen
+
+
+
+
+def slice_route_between_points(route_geom: list, start_point: list, end_point: list) -> list:
+    """
+    Slice a single-part route (LineString) between two points.
+
+    Parameters
+    ----------
+    route_geom : list[[lon, lat], ...]
+        Vertices of a route linestring in [lon, lat] order.
+    start_point : [lon, lat]
+        Begin point (not required to lie exactly on the route).
+    end_point : [lon, lat]
+        End point (not required to lie exactly on the route).
+
+    Returns
+    -------
+    list[[lon, lat], ...]
+        The sliced line segment as a list of [lon, lat] coordinates.
+        Returns an empty list if the slice cannot be computed.
+    """
+    from shapely.geometry import LineString, Point
+    from shapely.ops import substring
+
+    try:
+        line = LineString([(float(x), float(y)) for x, y in route_geom])
+        sp = Point(float(start_point[0]), float(start_point[1]))
+        ep = Point(float(end_point[0]), float(end_point[1]))
+
+        s_dist = line.project(sp)
+        e_dist = line.project(ep)
+        d0, d1 = (s_dist, e_dist) if s_dist <= e_dist else (e_dist, s_dist)
+
+        seg = substring(line, d0, d1)
+        if not isinstance(seg, LineString) or len(seg.coords) < 2:
+            return []
+        return [[float(x), float(y)] for (x, y) in seg.coords]
+    except Exception:
+        return []
+
 
 
 def slice_and_buffer_route(route_geom: list, start_point: list, end_point: list, distance_m: int = 50) -> list:

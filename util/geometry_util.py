@@ -96,12 +96,10 @@ from agol.agol_util import (
     query_routes_within_buffer)
 
 # Data Helpers Create Buffer
-from util.geospatial_util import create_buffers
-
-# Streamlit Handlers
-from util.streamlit_util import impacted_comms_select
-
-
+from util.geospatial_util import (
+    slice_route_between_points,
+    snap_bop_eop_to_route
+)
 
 
 
@@ -132,7 +130,7 @@ def draw_point(container):
     if "map_reset_counter" not in st.session_state:
         st.session_state.map_reset_counter = 0
 
-    st.markdown("<h5>DROP POINT(S) ON MAP</h4>", unsafe_allow_html=True)
+    st.markdown("<h6>DROP POINT(S) ON MAP</h6>", unsafe_allow_html=True)
     st.caption(
         "Use the map to drop pins for your project. Select the pin icon on the left, "
         "then click on the map to place points. The points will only be saved when you press **LOAD**."
@@ -228,7 +226,7 @@ def draw_line(container):
     if "route_reset_counter" not in st.session_state:
         st.session_state.route_reset_counter = 0
 
-    st.markdown("<h5>DRAW ROUTE(S) ON MAP</h4>", unsafe_allow_html=True)
+    st.markdown("<h6>DRAW ROUTE(S) ON MAP</h6>", unsafe_allow_html=True)
     st.caption(
         "Use the map to sketch your project route. Select the line tool on the left, "
         "then click on the map to trace your path. You can draw as many lines as you need. "
@@ -333,7 +331,7 @@ def draw_boundary(container):
     if "route_reset_counter" not in st.session_state:
         st.session_state.route_reset_counter = 0
 
-    st.markdown("<h5>DROP BOUNDARY(IES) ON MAP</h4>", unsafe_allow_html=True)
+    st.markdown("<h6>DROP BOUNDARY(IES) ON MAP</h6>", unsafe_allow_html=True)
     st.caption(
         "Use the map to outline your project boundary. Select the polygon tool on the left, "
         "then click around the map to define your boundaries. You can draw multiple boundaries on the map. "
@@ -455,7 +453,7 @@ def enter_latlng(container):
     if "map_reset_counter" not in st.session_state:
         st.session_state.map_reset_counter = 0
 
-    st.markdown("###### Enter Latitude & Longitude Coordinates", unsafe_allow_html=True)
+    st.markdown("<h6>Enter Latitude & Longitude Coordinates\n</h6>", unsafe_allow_html=True)
     st.caption(
         "Enter coordinates and press **Add point**. Repeat as needed. "
         "Press **LOAD** to save your points. Press **CLEAR** to start over."
@@ -605,7 +603,7 @@ def point_shapefile(container):
         - If a shapefile was uploaded previously, renders a Folium map by passing the
           stored points through geometry_to_folium (as an ArcGIS-style Multipoint).
     """
-    st.markdown("<h5>UPLOAD A POINT SHAPEFILE (ZIP)</h4>", unsafe_allow_html=True)
+    st.markdown("<h6>UPLOAD A POINT SHAPEFILE (ZIP)</h6>", unsafe_allow_html=True)
     st.caption(
         "Upload a zipped point shapefile (.zip) containing all required components "
         "(.shp, .shx, .dbf, and .prj). The file must contain Point geometry."
@@ -712,7 +710,7 @@ def polyline_shapefile(container):
         - Renders a Folium map drawing all stored routes by passing them through
           geometry_to_folium using the ArcGIS-style {"paths": [...]} form.
     """
-    st.markdown("<h5>UPLOAD A POLYLINE SHAPEFILE (ZIP)</h4>", unsafe_allow_html=True)
+    st.markdown("<h6>UPLOAD A POLYLINE SHAPEFILE (ZIP)</h6>", unsafe_allow_html=True)
 
     st.caption(
         "Upload a zipped polyline shapefile (.zip) containing all required components "
@@ -844,7 +842,7 @@ def polygon_shapefile(container):
         - Renders a Folium map drawing all stored polygons by passing each through
           geometry_to_folium using the ArcGIS-style {"rings": [...]} form.
     """
-    st.markdown("<h5>UPLOAD A POLYGON SHAPEFILE (ZIP)</h4>", unsafe_allow_html=True)
+    st.markdown("<h6>UPLOAD A POLYGON SHAPEFILE (ZIP)</h6>", unsafe_allow_html=True)
 
     st.caption(
         "Upload a zipped polygon shapefile (.zip) containing all required components "
@@ -972,317 +970,584 @@ def polygon_shapefile(container):
 # This helper displays and confirms AASHTOWare-provided coordinates. It also
 # writes a canonical selected_point into session_state for downstream flows.
 # =============================================================================
-def aashtoware_point(points: dict, container):
+def aashtoware_point(points, container):
     """
-    Display AASHTOWare-provided midpoint(s) using geometry_to_folium.
-    - Data is already in correct lon/lat format inside the package.
-    - Always render midpoints using geometry_to_folium(feature_type='point')
-    - Always store midpoints as [[lon, lat]] in session_state when there is exactly ONE.
+    Display AASHTOWare-provided midpoint(s) with tabs. Tabs use the route_name when
+    present; otherwise they are lettered as "MIDPOINT A", "MIDPOINT B", ... (no numbers).
+
+    INPUT FORMAT (new):
+    points: list[dict] where each dict represents a point with fields like:
+    {
+        'contract_id': '1058',
+        'type': 'Midpoint' \ 'BOP' \ 'EOP',
+        'route_id': '...',
+        'route_name': '...',
+        'lat': 64.84923889,
+        'lon': -147.85586389
+    }
+
+    Back-compat (legacy):
+    points: dict with optional key 'Midpoint' as dict or list of dicts.
+
+    Behavior:
+    - Extract ALL items with type == 'Midpoint' (case-insensitive).
+    - Tabs ABOVE the map:
+      * Label = route_name (if present/trimmed)
+      * Else label = "MIDPOINT <letters>" (A, B, C ... AA, AB ...).
+      * Inside each tab: read-only Latitude and Longitude.
+    - The map (below tabs) shows ALL midpoint markers.
+    - Fit map bounds to encompass **all** midpoint markers.
+
+    IMPORTANT (updated):
+    - Do NOT write to st.session_state["selected_point"] automatically.
+      Only write when the user presses **LOAD**.
     """
     target = container if container is not None else st
-
     with target:
-        st.markdown("###### AASHTOWARE COORDINATES\n", unsafe_allow_html=True)
+        st.markdown("<h6>AASHTOWARE COORDINATES\n</h6>", unsafe_allow_html=True)
         st.caption(
             "The coordinates below reflect the project's midpoint(s) from AASHTOWare. "
             "If they are correct, continue. Otherwise update AASHTOWare or select another upload option."
         )
 
-        # ---------------------------------------------------------
-        # NO NORMALIZATION. PULL MIDPOINTS EXACTLY AS PROVIDED.
-        # ---------------------------------------------------------
-        mid_raw = points.get("Midpoint")
-
-        # Always treat as list for mapping
-        if isinstance(mid_raw, list):
-            midpoints = mid_raw
-        elif isinstance(mid_raw, dict):
-            midpoints = [mid_raw]
-        else:
-            midpoints = []
-
-        # Convert from dicts into canonical [[lon, lat]]
-        midpoints_lonlat = [
-            [mp["lon"], mp["lat"]]
-            for mp in midpoints
-            if isinstance(mp, dict) and "lon" in mp and "lat" in mp
-        ]
-
-        # ---------------------------------------------------------
-        # UI SUMMARY
-        # ---------------------------------------------------------
-        if len(midpoints_lonlat) == 1:
-            lon, lat = midpoints_lonlat[0]
-            cols = st.columns(2)
-            with cols[0]:
-                ro_widget(key="awp_mid_lat", label="Latitude", value=lat)
-            with cols[1]:
-                ro_widget(key="awp_mid_lon", label="Longitude", value=lon)
-        else:
-            if midpoints_lonlat:
-                rows = [
-                    {"Type": f"Midpoint #{i}", "Latitude": lat, "Longitude": lon}
-                    for i, (lon, lat) in enumerate(midpoints_lonlat, start=1)
-                ]
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+        # -----------------------------
+        # Extract midpoint records
+        # -----------------------------
+        mid_records = []
+        if isinstance(points, list):
+            for p in points:
+                if isinstance(p, dict) and str(p.get("type", "")).strip().upper() == "MIDPOINT":
+                    mid_records.append(p)
+        elif isinstance(points, dict):
+            mid_raw = points.get("Midpoint") or points.get("MIDPOINT") or points.get("midpoint")
+            if isinstance(mid_raw, list):
+                mid_records = [m for m in mid_raw if isinstance(m, dict)]
+            elif isinstance(mid_raw, dict):
+                mid_records = [mid_raw]
             else:
-                st.info("No valid AASHTOWare midpoint found.")
+                mid_records = []
+        else:
+            mid_records = []
 
-        # ---------------------------------------------------------
-        # MAP (geometry_to_folium ONLY)
-        # ---------------------------------------------------------
+        # -----------------------------
+        # Helper: index -> letters (A, B, ..., Z, AA, AB, ...)
+        # -----------------------------
+        def _letters(idx_zero_based: int) -> str:
+            s = ""
+            n = idx_zero_based
+            while True:
+                n, r = divmod(n, 26)
+                s = chr(65 + r) + s
+                if n == 0:
+                    break
+                n -= 1  # Excel-style sequence
+            return s
+
+        # -----------------------------
+        # Prepare coords + tab labels
+        # -----------------------------
+        midpoints_lonlat = []  # [[lon, lat], ...] as floats when possible
+        tab_labels = []
+        unnamed_counter = 0
+        for mp in mid_records:
+            # Tab label: route_name or "MIDPOINT <letters>"
+            rn = mp.get("route_name")
+            if isinstance(rn, str) and rn.strip():
+                label = rn.strip()
+            else:
+                label = f"MIDPOINT {_letters(unnamed_counter)}"
+                unnamed_counter += 1
+            tab_labels.append(label)
+
+            # Coordinates for map (skip only if not castable to float)
+            lon = mp.get("lon")
+            lat = mp.get("lat")
+            try:
+                lon_f = float(lon)
+                lat_f = float(lat)
+                midpoints_lonlat.append([lon_f, lat_f])  # store as [lon, lat]
+            except Exception:
+                # OK for display in tabs; skip mapping if not castable
+                pass
+
+        # -----------------------------
+        # Tabs: one per midpoint (read-only lat/lon)
+        # -----------------------------
+        if mid_records:
+            tabs = st.tabs(tab_labels)
+            for idx, (tab, mp) in enumerate(zip(tabs, mid_records)):
+                with tab:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        ro_widget(key=f"awp_mid_lat_{idx}", label="Latitude", value=mp.get("lat"))
+                    with c2:
+                        ro_widget(key=f"awp_mid_lon_{idx}", label="Longitude", value=mp.get("lon"))
+        else:
+            st.info("No AASHTOWare midpoint found.")
+
+        # -----------------------------
+        # Map: render ALL midpoints (blue markers) and fit to ALL
+        # -----------------------------
         if midpoints_lonlat:
             first_latlon = [float(midpoints_lonlat[0][1]), float(midpoints_lonlat[0][0])]
         else:
             first_latlon = [0.0, 0.0]
-
         m = folium.Map(location=first_latlon, zoom_start=12)
 
-        # -- helper: cast to float right before passing to folium point renderer --
         def _as_float_lonlat(pair):
-            # pair is [lon, lat] and may contain strings; preserve order
+            # pair is [lon, lat]; ensure float; preserve order
             return [float(pair[0]), float(pair[1])]
 
         for coords in midpoints_lonlat:
             geometry_to_folium(
-                geom=[_as_float_lonlat(coords)],  # EXACT [lon, lat] cast to float
+                geom=[_as_float_lonlat(coords)],
                 feature_type="point",
                 icon=folium.Icon(color="blue"),
             ).add_to(m)
 
+        # Fit bounds to encompass **all** midpoint markers.
         if midpoints_lonlat:
             m.fit_bounds(set_bounds_point(midpoints_lonlat))
 
         st_folium(m, use_container_width=True, height=500)
 
-        # ---------------------------------------------------------
-        # SESSION — ALWAYS STORE IN LON/LAT
-        # ---------------------------------------------------------
-        if len(midpoints_lonlat) == 1:
-            st.session_state["selected_point"] = [midpoints_lonlat[0]]
-        else:
-            st.session_state["selected_point"] = None
+        # -----------------------------
+        # NEW: Full-width primary LOAD button (only writer)
+        # -----------------------------
+        if st.button(
+            "LOAD",
+            use_container_width=True,
+            type="primary",
+            key="awp_load_all_points",
+        ):
+            if midpoints_lonlat:
+                # Store ALL points as [[lon, lat], ...] (floats)
+                st.session_state["selected_point"] = [[float(lon), float(lat)] for lon, lat in midpoints_lonlat]
+            else:
+                st.info("No points to load.")
 
 
-def aashtoware_path(awp: dict, container) -> None:
+
+def aashtoware_path(points, container):
     """
-    Place AASHTOWare BOP/EOP (and optional Midpoint) markers on a draw-enabled map.
+    Build per-route *entries* from AASHTOWare BOP/EOP points (multiple pairs per route_id allowed),
+    snap each pair to its exact AGOL route geometry, slice between snapped endpoints, and render.
 
-    Input package (trusted as-is, no normalization):
-    awp = {
-      'BOP': {'lat': , 'lon': } \ or [{'lat': , 'lon': }, ...],
-      'EOP': {'lat': , 'lon': } \ or [{'lat': , 'lon': }, ...],
-      'Midpoint': {'lat': , 'lon': } \ or [{'lat': , 'lon': }, ...]  # optional
+    For each entry (per BOP/EOP pair):
+    {
+        "route_id": str,
+        "route_name": str,
+
+        # Originals from AASHTOWare (preserved)
+        "bop_orig": [lon, lat],
+        "eop_orig": [lon, lat],
+
+        # Snapped results (preferred for display and slicing)
+        "bop_snapped": [lon, lat] | None,
+        "eop_snapped": [lon, lat] | None,
+
+        # Sliced segment (single or multi-part) in [lon,lat] order
+        "route_geom": [[lon,lat], ...] or [[[lon,lat],...], ...]
     }
 
-    Behavior:
-    - Renders ALL BOP (green), EOP (red), and Midpoint (blue) points via geometry_to_folium(feature_type='point').
-    - Stores canonical lists in session_state (always [lon, lat]).
-    - Draw-enabled map (polyline only); LOAD/CLEAR logic preserved.
+    HARD REQUIREMENTS:
+    - BOP and EOP for an entry MUST come from the SAME route_id in the points list.
+    - The geometry used MUST be fetched by exact attribute match on that route_id.
+    - Coordinate order remains [lon, lat] (floats).
 
-    On LOAD:
-      st.session_state["selected_route"] = [
-        [[lon, lat], [lon, lat], ...],  # polyline 1
-        ...
-      ]
-
-    And persists:
-      - st.session_state["awp_bops_lonlat"] = [[lon, lat], ...]
-      - st.session_state["awp_eops_lonlat"] = [[lon, lat], ...]
-      - st.session_state["awp_midpoints_lonlat"] = [[lon, lat], ...]  # if present
-      - st.session_state["awp_bop_eop_pairs"] = [{"bop":[lon,lat], "eop":[lon,lat]}, ...]
-
-    Back-compat (exactly one bop and one eop):
-      - st.session_state['project_bop'] = [lon, lat]
-      - st.session_state['project_eop'] = [lon, lat]
-
-    On CLEAR:
-      st.session_state["selected_route"] = None
-      st.session_state.route_reset_counter += 1
-      st.rerun()
+    Writes nothing automatically to session_state["selected_route"]; only on LOAD.
     """
     target = container if container is not None else st
-
     with target:
         st.markdown("###### AASHTOWARE COORDINATES\n", unsafe_allow_html=True)
         st.caption(
-            "These coordinates reflect the project's begin (BOP), end (EOP), "
-            "and optional midpoint from AASHTOWare. Draw the project route on the map below, then click LOAD."
-        )
-        st.info(
-            "UNDER DEVELOPMENT — Routes sourced from AASHTOWare are still being built out. "
-            "You can currently view the BOP, Midpoint, and EOP for a project and manually draw a route between those points. "
-            "Automated route retrieval from AASHTOWare is not yet active."
+            "Begin/End points from AASHTOWare are snapped to the AGOL route and the segment "
+            "between them is displayed. Tabs show the coordinates per route."
         )
 
-        # -----------------------------
-        # Extract BOP/EOP/Midpoint as-is
-        # -----------------------------
-        def _as_list(obj):
-            if isinstance(obj, list):
-                return obj
-            if isinstance(obj, dict):
-                return [obj]
-            return []
-
-        bops_in = _as_list(awp.get('BOP'))
-        eops_in = _as_list(awp.get('EOP'))
-        mids_in = _as_list(awp.get('Midpoint'))
-
-        # Canonical [lon, lat] (NO conversion/rounding; trust package)
-        bops_lonlat = [[b['lon'], b['lat']] for b in bops_in if isinstance(b, dict) and 'lon' in b and 'lat' in b]
-        eops_lonlat = [[e['lon'], e['lat']] for e in eops_in if isinstance(e, dict) and 'lon' in e and 'lat' in e]
-        mids_lonlat = [[m['lon'], m['lat']] for m in mids_in if isinstance(m, dict) and 'lon' in m and 'lat' in m]
-
-        # Pair list (zip to shortest)
-        n_pairs = min(len(bops_lonlat), len(eops_lonlat))
-        bop_eop_pairs = [{"bop": bops_lonlat[i], "eop": eops_lonlat[i]} for i in range(n_pairs)]
-
-        # ---- Read-only summary ----
-        single_pair = len(bops_lonlat) == 1 and len(eops_lonlat) == 1
-        if single_pair:
-            bop_lon, bop_lat = bops_lonlat[0]
-            eop_lon, eop_lat = eops_lonlat[0]
-            cols = st.columns(2)
-            with cols[0]:
-                ro_widget(key="awp_bop_lat", label="BOP Latitude", value=bop_lat)
-            with cols[1]:
-                ro_widget(key="awp_bop_lon", label="BOP Longitude", value=bop_lon)
-
-            cols2 = st.columns(2)
-            with cols2[0]:
-                ro_widget(key="awp_eop_lat", label="EOP Latitude", value=eop_lat)
-            with cols2[1]:
-                ro_widget(key="awp_eop_lon", label="EOP Longitude", value=eop_lon)
-
-            if mids_lonlat:
-                mid_lon, mid_lat = mids_lonlat[0]
-                st.caption(f"Midpoint: lat {mid_lat}, lon {mid_lon}")
+        # ─────────────────────────────────────────────────────────────────────
+        # 0) Normalize incoming 'points' → flat list[dict]
+        # ─────────────────────────────────────────────────────────────────────
+        flat = []
+        if isinstance(points, list):
+            flat = [p for p in points if isinstance(p, dict)]
+        elif isinstance(points, dict):
+            def _as_list(obj):
+                if isinstance(obj, list): return [x for x in obj if isinstance(x, dict)]
+                if isinstance(obj, dict): return [obj]
+                return []
+            flat.extend(_as_list(points.get("BOP") or points.get("bop")))
+            flat.extend(_as_list(points.get("EOP") or points.get("eop")))
         else:
-            rows = []
-            for idx, (lon, lat) in enumerate(bops_lonlat, start=1):
-                rows.append({"Type": f"BOP #{idx}", "Latitude": lat, "Longitude": lon})
-            for idx, (lon, lat) in enumerate(eops_lonlat, start=1):
-                rows.append({"Type": f"EOP #{idx}", "Latitude": lat, "Longitude": lon})
-            for idx, (lon, lat) in enumerate(mids_lonlat, start=1):
-                rows.append({"Type": f"Midpoint #{idx}", "Latitude": lat, "Longitude": lon})
-            if rows:
-                st.dataframe(rows, use_container_width=True, hide_index=True)
+            flat = []
+        if not flat:
+            st.info("No AASHTOWare BOP/EOP points were provided.")
+            return {}
 
-        # Ensure reset counter exists
-        st.session_state.setdefault("route_reset_counter", 0)
+        # ─────────────────────────────────────────────────────────────────────
+        # 1) STRICT grouping by route_id; pair BOP[i]↔EOP[i] for each route_id
+        # (Entries preserve encounter order; route_name taken from points list.)
+        # ─────────────────────────────────────────────────────────────────────
+        grouped = {}  # rid -> {"name": str, "bops": [[lon,lat],...], "eops": [[lon,lat],...]}
+        for rec in flat:
+            t = str(rec.get("type", "")).strip().upper()
+            if t not in ("BOP", "EOP"):
+                continue
+            rid = rec.get("route_id") or rec.get("routeID") or rec.get("Route_ID")
+            if rid is None:
+                continue
+            rname = rec.get("route_name") or rec.get("routeName") or rec.get("Route_Name") or ""
+            lon, lat = rec.get("lon"), rec.get("lat")
+            try:
+                lon_f, lat_f = float(lon), float(lat)
+            except Exception:
+                continue  # skip invalid coords
 
-        # ---- Map with markers (geometry_to_folium ONLY) ----
-        # Center = first available point → [lat, lon]
-        if bops_lonlat:
-            start_center = [float(bops_lonlat[0][1]), float(bops_lonlat[0][0])]
-        elif eops_lonlat:
-            start_center = [float(eops_lonlat[0][1]), float(eops_lonlat[0][0])]
-        elif mids_lonlat:
-            start_center = [float(mids_lonlat[0][1]), float(mids_lonlat[0][0])]
-        else:
-            start_center = [0.0, 0.0]
+            bucket = grouped.setdefault(str(rid), {"name": "", "bops": [], "eops": []})
+            if not bucket["name"] and isinstance(rname, str):
+                bucket["name"] = rname.strip()
+            if t == "BOP":
+                bucket["bops"].append([lon_f, lat_f])
+            elif t == "EOP":
+                bucket["eops"].append([lon_f, lat_f])
 
-        m = folium.Map(location=start_center, zoom_start=10)
+        # Build entries list: one entry per BOP/EOP pair for each route_id
+        entries = []
+        for rid, data in grouped.items():
+            bops = data["bops"]
+            eops = data["eops"]
+            n = min(len(bops), len(eops))
+            for i in range(n):
+                entries.append({
+                    "route_id": rid,
+                    "route_name": data["name"] or "",
+                    # Preserve originals
+                    "bop_orig": bops[i],
+                    "eop_orig": eops[i],
+                    # Snapped (to be computed)
+                    "bop_snapped": None,
+                    "eop_snapped": None,
+                    # Sliced segment
+                    "route_geom": None,
+                })
+        if not entries:
+            st.info("No complete BOP/EOP pairs found per route_id.")
+            return {}
 
-        # -- helper: cast to float right before passing to folium point renderer --
-        def _as_float_lonlat(pair):
-            # pair is [lon, lat] and may contain strings; preserve order
-            return [float(pair[0]), float(pair[1])]
+        # Optional seed (now includes originals; snapped slots empty initially)
+        st.session_state["awp_route_entries"] = [
+            {
+                "route_id": e["route_id"],
+                "route_name": e["route_name"],
+                "bop_orig": e["bop_orig"],
+                "eop_orig": e["eop_orig"],
+                "bop_snapped": e.get("bop_snapped"),
+                "eop_snapped": e.get("eop_snapped"),
+            }
+            for e in entries
+        ]
 
-        # Add ALL points via geometry_to_folium
-        for coords in bops_lonlat:
-            geometry_to_folium(
-                geom=[_as_float_lonlat(coords)],  # [lon, lat] as float
-                feature_type='point',
-                icon=folium.Icon(color="green"),
-            ).add_to(m)
+        # ─────────────────────────────────────────────────────────────────────
+        # 2) Cache guard signature (based on originals + service)
+        # ─────────────────────────────────────────────────────────────────────
+        def _fingerprint(obj) -> str:
+            try:
+                return hashlib.md5(
+                    json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                ).hexdigest()
+            except Exception:
+                return f"{type(obj).__name__}:{str(obj)[:200]}"
 
-        for coords in eops_lonlat:
-            geometry_to_folium(
-                geom=[_as_float_lonlat(coords)],
-                feature_type='point',
-                icon=folium.Icon(color="red"),
-            ).add_to(m)
-
-        for coords in mids_lonlat:
-            geometry_to_folium(
-                geom=[_as_float_lonlat(coords)],
-                feature_type='point',
-                icon=folium.Icon(color="blue"),
-            ).add_to(m)
-
-        # Fit bounds using canonical [lon, lat] lists
-        all_lonlat = bops_lonlat + eops_lonlat + mids_lonlat
-        if all_lonlat:
-            m.fit_bounds(set_bounds_point(all_lonlat))
-
-        # Enable drawing of polyline only
-        Draw(
-            export=False,
-            position="topleft",
-            draw_options={
-                "polyline": True,
-                "polygon": False,
-                "rectangle": False,
-                "circle": False,
-                "circlemarker": False,
-                "marker": False,
+        ri = st.session_state.get("route_intersect") or {}
+        sig_payload = {
+            "entries": [
+                {
+                    "route_id": e["route_id"],
+                    "route_name": e["route_name"],
+                    "bop_orig": e["bop_orig"],
+                    "eop_orig": e["eop_orig"],
+                }
+                for e in entries
+            ],
+            "service": {
+                "url": ri.get("url"),
+                "layer": int(ri.get("layer", 0)),
+                "id_field": (ri.get("id_field") or "Route_ID"),
             },
-            edit_options={"edit": True, "remove": True},
-        ).add_to(m)
+        }
+        sig = _fingerprint(sig_payload)
+        cache_key = "awp_paths_cache_v2"
+        if cache_key not in st.session_state:
+            st.session_state[cache_key] = {}
+        cached = st.session_state[cache_key].get(sig)
 
-        # Render and capture drawings
-        output = st_folium(
+        # ─────────────────────────────────────────────────────────────────────
+        # 3) For each entry → fetch exact route geometry, snap, slice
+        # ─────────────────────────────────────────────────────────────────────
+        if cached is None:
+            progress_box = st.empty()
+            prog = progress_box.progress(0, text="Preparing route geometry…")
+
+            def _update_progress(i: int, label: str):
+                total = max(1, len(entries))
+                pct = int(round((i / total) * 100))
+                try:
+                    prog.progress(pct, text=label)
+                except Exception:
+                    try:
+                        prog.progress(pct)
+                    except Exception:
+                        pass
+
+            routes_url = ri.get("url")
+            routes_layer = ri.get("layer", 0)
+            id_field = ri.get("id_field") or "Route_ID"
+
+            out_entries = []
+            for idx, e in enumerate(entries, start=1):
+                rid = e["route_id"]
+                if not routes_url:
+                    e["route_geom"] = None
+                    out_entries.append(e)
+                    _update_progress(idx, f"{rid}: no route service configured")
+                    continue
+
+                # 3.1 Fetch geometry for THIS exact route_id
+                try:
+                    _update_progress(idx - 1, f"{rid}: fetching route geometry…")
+                    features = select_record(
+                        url=str(routes_url),
+                        layer=int(routes_layer),
+                        id_field=str(id_field),
+                        id_value=str(rid),
+                        fields=f"{id_field},Route_Name",
+                        return_geometry=True,
+                    ) or []
+                except Exception:
+                    features = []
+
+                geom = None
+                if features:
+                    def _attr_id(f):
+                        attrs = (f.get("attributes") or {})
+                        return (
+                            attrs.get(id_field)
+                            or attrs.get(str(id_field).upper())
+                            or attrs.get(str(id_field).lower())
+                        )
+                    exact = next((f for f in features if str(_attr_id(f)).strip() == str(rid).strip()), None)
+                    geom = exact.get("geometry") if exact is not None else None
+
+                if not geom:
+                    e["route_geom"] = None
+                    out_entries.append(e)
+                    _update_progress(idx, f"{rid}: route geometry not found for exact Route_ID")
+                    continue
+
+                # 3.2 Snap THIS entry's BOP/EOP to THIS geometry
+                bop = e.get("bop_orig")
+                eop = e.get("eop_orig")
+                try:
+                    _update_progress(idx - 1, f"{rid}: snapping BOP/EOP to route…")
+                    snapped_bop, snapped_eop, chosen_part = snap_bop_eop_to_route(
+                        route_geom=geom,
+                        bop_lonlat=bop,
+                        eop_lonlat=eop,
+                    )
+                    # Preserve originals; store snapped separately
+                    e["bop_snapped"] = snapped_bop
+                    e["eop_snapped"] = snapped_eop
+                except Exception:
+                    chosen_part = None
+
+                def _valid_pt(pt):
+                    return (
+                        isinstance(pt, (list, tuple))
+                        and len(pt) == 2
+                        and all(isinstance(v, (int, float)) for v in pt)
+                    )
+
+                if not chosen_part or not _valid_pt(e.get("bop_snapped")) or not _valid_pt(e.get("eop_snapped")):
+                    e["route_geom"] = None
+                    out_entries.append(e)
+                    _update_progress(idx, f"{rid}: endpoints could not be snapped to this Route_ID")
+                    continue
+
+                # 3.3 Slice THIS route between THESE snapped points
+                try:
+                    _update_progress(idx - 1, f"{rid}: slicing segment between BOP/EOP…")
+                    seg = slice_route_between_points(
+                        route_geom=chosen_part,        # [[lon,lat], ...]
+                        start_point=e.get("bop_snapped"),
+                        end_point=e.get("eop_snapped"),
+                    )
+                except Exception:
+                    seg = None
+
+                e["route_geom"] = seg
+                out_entries.append(e)
+                _update_progress(idx, f"{rid}: ready")
+
+            try:
+                progress_box.empty()
+            except Exception:
+                pass
+
+            # Cache the full computed entries (with originals + snapped + geometry)
+            st.session_state[cache_key][sig] = out_entries
+            computed = out_entries
+        else:
+            computed = cached
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 4) Render: tabs + map (all segments + BOP/EOP markers; fit to all)
+        #    Tabs and map ALWAYS prefer snapped values; fall back to originals.
+        # ─────────────────────────────────────────────────────────────────────
+        # Build tab labels (ensure uniqueness if names repeat)
+        def _unique_labels(bases):
+            seen = {}
+            labels = []
+            for b in bases:
+                base = (b or "").strip()
+                base = base if base else "—"
+                cnt = seen.get(base, 0) + 1
+                seen[base] = cnt
+                labels.append(base if cnt == 1 else f"{base} ({cnt})")
+            return labels
+
+        bases = [(e.get("route_name") or "").strip() or str(e.get("route_id")) for e in computed]
+        tab_labels = _unique_labels(bases)
+        tabs = st.tabs(tab_labels)
+
+        for idx, (tab, e) in enumerate(zip(tabs, computed)):
+            with tab:
+                # Prefer snapped values in tabs
+                bop_ll = e.get("bop_snapped") or e.get("bop_orig")
+                eop_ll = e.get("eop_snapped") or e.get("eop_orig")
+
+                colA, colB = st.columns(2)
+                with colA:
+                    ro_widget(key=f"awp_bop_lat_{idx}", label="BEGIN Latitude",
+                              value=(bop_ll[1] if isinstance(bop_ll, (list, tuple)) else None))
+                with colB:
+                    ro_widget(key=f"awp_bop_lon_{idx}", label="BEGIN Longitude",
+                              value=(bop_ll[0] if isinstance(bop_ll, (list, tuple)) else None))
+                colC, colD = st.columns(2)
+                with colC:
+                    ro_widget(key=f"awp_eop_lat_{idx}", label="END Latitude",
+                              value=(eop_ll[1] if isinstance(eop_ll, (list, tuple)) else None))
+                with colD:
+                    ro_widget(key=f"awp_eop_lon_{idx}", label="END Longitude",
+                              value=(eop_ll[0] if isinstance(eop_ll, (list, tuple)) else None))
+
+        # Map start location: use first available snapped (else original)
+        first_pt = None
+        for e in computed:
+            pt = e.get("bop_snapped") or e.get("bop_orig")
+            if pt:
+                first_pt = pt
+                break
+            pt = e.get("eop_snapped") or e.get("eop_orig")
+            if pt:
+                first_pt = pt
+                break
+        start_latlon = [first_pt[1], first_pt[0]] if first_pt else [64.0, -152.0]
+        m = folium.Map(location=start_latlon, zoom_start=10)
+
+        # Draw sliced route segments first (so markers sit on top)
+        for e in computed:
+            seg = e.get("route_geom")
+            if not seg:
+                continue
+            try:
+                geometry_to_folium(
+                    geom=seg,
+                    color="#3388ff",
+                    weight=6,
+                    opacity=1.0,
+                    tooltip=f"{e.get('route_id')}: {e.get('route_name') or ''}",
+                    feature_type="line",
+                ).add_to(m)
+            except Exception:
+                pass
+
+        # BOP/EOP markers — prefer snapped values for display
+        all_points_lonlat = []
+        for e in computed:
+            name = (e.get("route_name") or "").strip()
+            bop = e.get("bop_snapped") or e.get("bop_orig")
+            eop = e.get("eop_snapped") or e.get("eop_orig")
+
+            if isinstance(bop, (list, tuple)) and len(bop) == 2:
+                all_points_lonlat.append(bop)
+                try:
+                    folium.Marker(
+                        [bop[1], bop[0]],
+                        tooltip=f"BEGIN: {name}" if name else "BEGIN",
+                        icon=folium.Icon(color="green"),
+                    ).add_to(m)
+                except Exception:
+                    pass
+            if isinstance(eop, (list, tuple)) and len(eop) == 2:
+                all_points_lonlat.append(eop)
+                try:
+                    folium.Marker(
+                        [eop[1], eop[0]],
+                        tooltip=f"END: {name}" if name else "END",
+                        icon=folium.Icon(color="red"),
+                    ).add_to(m)
+                except Exception:
+                    pass
+
+        # Fit bounds to all points
+        if all_points_lonlat:
+            try:
+                bounds = set_bounds_point(all_points_lonlat)
+                m.fit_bounds(bounds)
+            except Exception:
+                pass
+
+        _ = st_folium(
             m,
             use_container_width=True,
             height=520,
-            returned_objects=["all_drawings"],
+            returned_objects=["last_clicked"],  # no pan/zoom reruns
         )
 
-        # Extract all drawn lines (GeoJSON uses [lon, lat]); round only for drawn data
-        latest_routes = []
-        if output and "all_drawings" in output and output["all_drawings"]:
-            for f in output["all_drawings"]:
-                geom = f.get("geometry", {}) if isinstance(f, dict) else {}
-                gtype = geom.get("type")
-                if gtype == "LineString":
-                    coords = geom.get("coordinates", []) or []
-                    line_lonlat = [[round(lon, 6), round(lat, 6)] for lon, lat in coords]
-                    if line_lonlat:
-                        latest_routes.append(line_lonlat)
-                elif gtype == "MultiLineString":
-                    for line in geom.get("coordinates", []) or []:
-                        line_lonlat = [[round(lon, 6), round(lat, 6)] for lon, lat in line]
-                        if line_lonlat:
-                            latest_routes.append(line_lonlat)
+        # -----------------------------
+        # LOAD button → selected_route
+        # -----------------------------
+        def _as_list_of_lines(seg):
+            """
+            Normalize route_geom into a list of polylines.
+            - If seg is a single polyline: [[lon,lat], ...] → [seg]
+            - If seg is multi-part: [[[lon,lat],...], [[lon,lat],...]] → seg
+            - Otherwise: return []
+            """
+            if not isinstance(seg, list) or not seg:
+                return []
+            # single part: [[lon,lat], ...]
+            if (isinstance(seg[0], (list, tuple)) and len(seg[0]) == 2
+                and all(isinstance(v, (int, float)) for v in seg[0])):
+                return [seg]
+            # multi-part: [[[lon,lat],...], ...]
+            if (isinstance(seg[0], (list, tuple)) and seg
+                and isinstance(seg[0][0], (list, tuple)) and len(seg[0][0]) == 2):
+                return seg
+            return []
 
-        # ---- Persist AWP lists (canonical [lon, lat]) ----
-        st.session_state["awp_bops_lonlat"] = bops_lonlat
-        st.session_state["awp_eops_lonlat"] = eops_lonlat
-        st.session_state["awp_midpoints_lonlat"] = mids_lonlat
-        st.session_state["awp_bop_eop_pairs"] = bop_eop_pairs
-
-        # Back-compat for single pair
-        if len(bops_lonlat) == 1 and len(eops_lonlat) == 1:
-            st.session_state['project_bop'] = bops_lonlat[0]
-            st.session_state['project_eop'] = eops_lonlat[0]
-        else:
-            st.session_state.pop('project_bop', None)
-            st.session_state.pop('project_eop', None)
-
-        # ---- Buttons ----
-        with st.container():
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                if st.button("LOAD", use_container_width=True, type="primary"):
-                    st.session_state["selected_route"] = latest_routes if latest_routes else None
-            with col2:
-                if st.button("CLEAR", use_container_width=True):
-                    st.session_state["selected_route"] = None
-                    st.session_state.route_reset_counter += 1
-                    st.rerun()
-
+        if st.button("LOAD", use_container_width=True, type="primary", key="awp_load_all_routes_v2"):
+            all_lines = []
+            for e in computed:
+                parts = _as_list_of_lines(e.get("route_geom"))
+                if parts:
+                    all_lines.extend(parts)
+            if all_lines:
+                st.session_state["selected_route"] = [
+                    [[float(x), float(y)] for (x, y) in line] for line in all_lines
+                ]
+            else:
+                st.info("No routes to load.")
 
 
 
@@ -1716,18 +1981,18 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     # ------------------------------------------------------
     m = folium.Map(control_scale=True)
 
-    # Impact Area
-    if area_for_display:
-        for ring_lonlat in area_for_display:
-            geometry_to_folium(
-                ring_lonlat,
-                color="#e64a19",
-                weight=2,
-                fill=True,
-                fill_color="#ff7043",
-                fill_opacity=0.30,
-                feature_type="polygon",
-            ).add_to(m)
+    # # Impact Area
+    # if is_existing and area_for_display:
+    #     for ring_lonlat in area_for_display:
+    #         geometry_to_folium(
+    #             ring_lonlat,
+    #             color="#e64a19",
+    #             weight=2,
+    #             fill=True,
+    #             fill_color="#ff7043",
+    #             fill_opacity=0.30,
+    #             feature_type="polygon",
+    #         ).add_to(m)
 
     # Routes (when selecting) OR the selected route (other modes)
     if place_mode == "1. Select Route":

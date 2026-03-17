@@ -1,14 +1,13 @@
-"""
-===============================================================================
-DISTRICT QUERIES (STREAMLIT) — GEOGRAPHY INTERSECTS (HOUSE / SENATE / BOROUGH / REGION)
-===============================================================================
-Updated:
-  - Adaptive route chunking (polyline point chunks)
-  - Adaptive polygon chunking (slice polygon into valid sub-polygons and query)
-  - NEW: Optional selective sections execution when calling run_district_queries(sections=[...])
-  - Messaging fix: removed info banners; use only proper spinners (context manager)
-===============================================================================
-"""
+# ===============================================================================
+# DISTRICT QUERIES (STREAMLIT) — GEOGRAPHY INTERSECTS (HOUSE / SENATE / BOROUGH / REGION)
+# ===============================================================================
+# Updated:
+# - Adaptive route chunking (polyline point chunks)
+# - Adaptive polygon chunking (slice polygon into valid sub-polygons and query)
+# - NEW: Optional selective sections execution when calling run_district_queries(sections=[...])
+# - Messaging fix: removed info banners; use only proper spinners (context manager)
+# - NEW (this commit): Per-category granular progress updates with callbacks
+# ===============================================================================
 
 import streamlit as st
 import re
@@ -45,13 +44,15 @@ def _split_string_values(s: str):
     """
     if not s:
         return []
-    s = s.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
+    # Normalize HTML line breaks we might get back
+    s = s.replace("<br/>", "\n").replace("<br>", "\n").replace("<BR>", "\n")
     parts = re.split(r"[\n;]+", s)
     exploded = []
     for p in parts:
         p = p.strip()
         if not p:
             continue
+        # Also split residual comma-separated items
         for q in p.split(","):
             q = q.strip()
             if q:
@@ -67,7 +68,7 @@ def _call_intersect(url, layer, geometry, fields, return_geometry, list_values, 
         fields=fields,
         return_geometry=return_geometry,
         list_values=list_values,
-        string_values=string_values
+        string_values=string_values,
     )
     return (r.list_values or [], r.string_values or "", r.results)
 
@@ -79,7 +80,6 @@ def _call_intersect(url, layer, geometry, fields, return_geometry, list_values, 
 def _extract_route_paths(geom):
     """
     Normalize route geometry into list of paths (each path=list of [lat,lon]).
-
     Supports:
       A) [[lat, lon], ...]
       B) [[[lat, lon], ...]]
@@ -139,7 +139,7 @@ def _chunk_points(points, max_points: int, overlap: int = 1):
 def _chunk_route_geometry(route_geom, max_points: int):
     """
     Returns list of route geometries each shaped as list-of-paths.
-    Example input:  [[[p1..pN]]]
+    Example input: [[[p1..pN]]]
     Output: [ [[seg1]], [[seg2]], ... ]
     """
     paths, is_route = _extract_route_paths(route_geom)
@@ -150,7 +150,6 @@ def _chunk_route_geometry(route_geom, max_points: int):
     for path in paths:
         for seg in _chunk_points(path, max_points=max_points, overlap=1):
             chunks.append([seg])  # keep list-of-paths structure
-
     return chunks or [route_geom]
 
 
@@ -162,8 +161,7 @@ def _extract_polygon_rings(geom):
     """
     Normalize boundary geometry into list of rings:
       rings = [ ring1, ring2, ... ]
-      ring = [ [ [lat,lon], ... ] ]
-
+      ring  = [ [ [lat,lon], ... ] ]
     Returns: (rings, is_polygon_like)
     """
     if not isinstance(geom, list) or not geom:
@@ -214,6 +212,7 @@ def _polygon_to_shapely(boundary_geom):
     holes_xy = [[(pt[1], pt[0]) for pt in h] for h in holes if h and len(h) >= 4]
 
     poly = Polygon(outer_xy, holes_xy)
+
     # Clean minor self-intersections
     try:
         poly = poly.buffer(0)
@@ -223,7 +222,7 @@ def _polygon_to_shapely(boundary_geom):
 
 
 def _shapely_to_boundary_geom(poly):
-    """Convert shapely Polygon -> boundary rings format [ [ [lat,lon]... ], [hole...], ... ]."""
+    """Convert shapely Polygon -> boundary rings format [[ [lat,lon]... ], [hole...], ... ]."""
     rings = []
 
     # Exterior
@@ -307,7 +306,7 @@ def _slice_polygon_into_equal_parts(boundary_geom, parts: int):
 
 
 # =============================================================================
-# ADAPTIVE INTERSECT (ROUTES + POLYGONS)
+# ADAPTIVE INTERSECT (ROUTES + POLYGONS) — with optional progress callback
 # =============================================================================
 
 def _agol_intersect_adaptive(
@@ -320,6 +319,7 @@ def _agol_intersect_adaptive(
     string_values: str,
     enable_route_chunking: bool = True,
     enable_polygon_chunking: bool = True,
+    progress_cb=None,  # <-- NEW (optional)
 ):
     """
     Robust intersect wrapper:
@@ -329,13 +329,19 @@ def _agol_intersect_adaptive(
          - Else if polygon chunking enabled and geometry polygon-like: slice into valid pieces
       3) Merge results as uniques.
 
-    Session-state knobs:
-      - agol_max_points_per_query (default 300)
-      - agol_min_points_per_query (default 15)
-      - agol_polygon_initial_slices (default 4)
-      - agol_polygon_max_slices (default 64)
-      - agol_debug_chunking (default False)
+    Optional progress_cb(msg: str, frac: float|None):
+      - msg: human-friendly status message
+      - frac: 0..1 progress within the *query phase* for a single section; can be None for message-only updates
     """
+    def _notify(msg: str, frac=None):
+        if progress_cb is not None:
+            try:
+                f = None if frac is None else max(0.0, min(1.0, float(frac)))
+                progress_cb(msg, f)
+            except Exception:
+                # Never let UI progress errors break data work
+                pass
+
     debug = bool(st.session_state.get("agol_debug_chunking", False))
 
     # Determine geometry kinds (best-effort)
@@ -343,13 +349,18 @@ def _agol_intersect_adaptive(
     _, is_poly = _extract_polygon_rings(geometry)
 
     # 1) Single call first
+    _notify("Submitting full-geometry query…", 0.05)
     try:
-        ids, labels, result = _call_intersect(url, layer, geometry, fields, return_geometry, list_values, string_values)
-        return {"list_values": ids, "string_values": labels, 'result': result}
+        ids, labels, result = _call_intersect(
+            url, layer, geometry, fields, return_geometry, list_values, string_values
+        )
+        _notify("Full-geometry query succeeded.", 1.0)
+        return {"list_values": ids, "string_values": labels, "result": result}
     except Exception as e:
         if debug:
             st.write(f"[chunking] Full-geometry query failed: {e!r}")
         full_error = e
+        _notify("Full-geometry query failed; evaluating chunking path…", None)
 
     # 2a) Route chunking path
     if enable_route_chunking and is_route:
@@ -357,29 +368,47 @@ def _agol_intersect_adaptive(
         min_points = int(st.session_state.get("agol_min_points_per_query", 15))
         current = max_points
         last_error = None
+        overall_max_fraction = 0.0  # ensure we never regress on retries
 
         while current >= min_points:
             try:
                 geoms = _chunk_route_geometry(geometry, max_points=current)
-                if debug:
-                    st.write(f"[chunking][route] Trying {len(geoms)} chunks @ {current} pts/chunk")
+                n = max(1, len(geoms))
+                _notify(f"Route chunking: {n} chunk(s) @ {current} pts/chunk…", 0.0)
 
                 merged_ids = []
                 merged_labels_list = []
 
-                for g in geoms:
-                    ids, labels, result = _call_intersect(url, layer, g, fields, return_geometry, list_values, string_values)
+                for i, g in enumerate(geoms, start=1):
+                    # Per-chunk fetch
+                    ids, labels, result = _call_intersect(
+                        url, layer, g, fields, return_geometry, list_values, string_values
+                    )
                     merged_ids.extend(ids)
                     merged_labels_list.extend(_split_string_values(labels))
 
+                    # Update fraction monotonically across retries
+                    frac = i / float(n)
+                    if frac > overall_max_fraction:
+                        overall_max_fraction = frac
+                    _notify(f"Fetched route chunk {i}/{n}…", overall_max_fraction)
+
+                # Merge/unique finalization
+                _notify("Merging and de-duplicating route results…", min(0.98, overall_max_fraction))
                 merged_ids = _unique_preserve_order(merged_ids)
                 merged_labels_list = _unique_preserve_order(merged_labels_list)
-                return {"list_values": merged_ids, "string_values": ", ".join(merged_labels_list), 'result': result}
+                _notify("Route query complete.", 1.0)
 
+                return {
+                    "list_values": merged_ids,
+                    "string_values": ", ".join(merged_labels_list),
+                    "result": result,
+                }
             except Exception as e:
                 last_error = e
                 if debug:
                     st.write(f"[chunking][route] Failed @ {current} pts/chunk: {e!r}")
+                _notify(f"Retrying route chunking with smaller chunk size (≤ {current//2})…", None)
                 current = current // 2
 
         raise RuntimeError(
@@ -390,32 +419,46 @@ def _agol_intersect_adaptive(
     if enable_polygon_chunking and is_poly:
         initial = int(st.session_state.get("agol_polygon_initial_slices", 4))
         max_slices = int(st.session_state.get("agol_polygon_max_slices", 64))
-
         slices = max(2, initial)
         last_error = None
+        overall_max_fraction = 0.0
 
         while slices <= max_slices:
             try:
                 pieces = _slice_polygon_into_equal_parts(geometry, parts=slices)
-                if debug:
-                    st.write(f"[chunking][polygon] Trying {len(pieces)} polygon pieces @ {slices} slices")
+                n = max(1, len(pieces))
+                _notify(f"Polygon slicing: {n} piece(s) @ {slices} slices…", 0.0)
 
                 merged_ids = []
                 merged_labels_list = []
 
-                for piece_geom in pieces:
-                    ids, labels, result = _call_intersect(url, layer, piece_geom, fields, return_geometry, list_values, string_values)
+                for i, piece_geom in enumerate(pieces, start=1):
+                    ids, labels, result = _call_intersect(
+                        url, layer, piece_geom, fields, return_geometry, list_values, string_values
+                    )
                     merged_ids.extend(ids)
                     merged_labels_list.extend(_split_string_values(labels))
 
+                    frac = i / float(n)
+                    if frac > overall_max_fraction:
+                        overall_max_fraction = frac
+                    _notify(f"Fetched polygon piece {i}/{n}…", overall_max_fraction)
+
+                _notify("Merging and de-duplicating polygon results…", min(0.98, overall_max_fraction))
                 merged_ids = _unique_preserve_order(merged_ids)
                 merged_labels_list = _unique_preserve_order(merged_labels_list)
-                return {"list_values": merged_ids, "string_values": ", ".join(merged_labels_list), "result": result}
+                _notify("Polygon query complete.", 1.0)
 
+                return {
+                    "list_values": merged_ids,
+                    "string_values": ", ".join(merged_labels_list),
+                    "result": result,
+                }
             except Exception as e:
                 last_error = e
                 if debug:
                     st.write(f"[chunking][polygon] Failed @ {slices} slices: {e!r}")
+                _notify("Retrying polygon slicing with more slices (×2)…", None)
                 slices *= 2
 
         raise RuntimeError(
@@ -427,17 +470,14 @@ def _agol_intersect_adaptive(
 
 
 # =============================================================================
-# ENTRYPOINT: RUN ALL / SELECTED DISTRICT/GEOGRAPHY QUERIES
+# ENTRYPOINT: RUN ALL / SELECTED DISTRICT/GEOGRAPHY QUERIES — granular progress
 # =============================================================================
-# Optional alias for convenience (matches the name you mentioned)
-# Optional alias for convenience (matches the name you mentioned)
+
 def run_district_queries(sections=None, message=None):
     """
-    Progress-bar version of district queries.
+    Progress-bar version of district queries with *per-category granular* steps.
     Uses a borderless container inside a placeholder and clears it when done.
     """
-    import streamlit as st
-
     valid_sections = {'house', 'senate', 'borough', 'region', 'routes'}
     if sections is None:
         sections_set = valid_sections.copy()
@@ -484,109 +524,141 @@ def run_district_queries(sections=None, message=None):
         return
 
     geom = st.session_state['project_geometry']
-
     enable_route_chunking = bool(st.session_state.get("selected_route"))
     enable_polygon_chunking = bool(st.session_state.get("selected_boundary"))
 
     ordered_sections = [s for s in ['house', 'senate', 'borough', 'region'] if s in sections_set]
-    total = max(1, len(ordered_sections))
+    n_sections = max(1, len(ordered_sections))
+    cat_share = 1.0 / n_sections  # each category consumes equal slice of the progress bar
 
     # --------------------------------------------------------------
-    # Use a *placeholder* that owns the render, then put a container inside it.
-    # Empty the placeholder at the end to ensure complete removal.
+    # Use a *placeholder* that owns the render; clear it at the end.
     # --------------------------------------------------------------
-    progress_block = st.empty()  # <-- the owner we can definitely clear
+    progress_block = st.empty()  # owner we can definitely clear
+
     try:
-        with progress_block.container():  # borderless by default
+        with progress_block.container():
             st.write('')
             status_ph = st.empty()
             bar_ph = st.empty()
             progress_bar = bar_ph.progress(0)
 
-            def _set_status(txt: str):
-                status_ph.write(txt)
+            def _set_status(msg: str):
+                status_ph.write(msg)
 
-            completed = 0
+            def _set_progress(p01: float):
+                progress_bar.progress(int(max(0, min(1, p01)) * 100))
 
-            # --- House ---
+            # Progress will move from 0 -> 1 across all categories
+            base = 0.0
+
+            # Helper to run a category with a live callback coming from _agol_intersect_adaptive
+            def _run_category(cat_label: str, intersect_cfg, save_keys):
+                nonlocal base
+
+                # 10% for init, 80% for fetching (callback), 10% for saving
+                init_w, fetch_w, save_w = 0.10, 0.80, 0.10
+
+                # Init step
+                _set_status(f"{cat_label}: Initializing…")
+                _set_progress(base + cat_share * (init_w * 0.5))
+
+                last_f = 0.0  # ensure monotone progress even if the adaptive query retries
+
+                def _cb(msg: str, frac):
+                    nonlocal last_f
+                    if frac is None:
+                        # Message-only (e.g., announcing retries)
+                        _set_status(f"{cat_label}: {msg}")
+                        return
+                    if frac < last_f:
+                        frac = last_f
+                    last_f = frac
+                    _set_status(f"{cat_label}: {msg}")
+                    _set_progress(base + cat_share * (init_w + fetch_w * frac))
+
+                # Query (with granular callback)
+                _set_status(f"{cat_label}: Starting query…")
+                res = _agol_intersect_adaptive(
+                    url=intersect_cfg['url'],
+                    layer=intersect_cfg['layer'],
+                    geometry=geom,
+                    fields=intersect_cfg['fields'],
+                    return_geometry=False,
+                    list_values=intersect_cfg['list_values'],
+                    string_values=intersect_cfg['string_values'],
+                    enable_route_chunking=enable_route_chunking,
+                    enable_polygon_chunking=enable_polygon_chunking,
+                    progress_cb=_cb,  # <-- wiring the live updates
+                )
+
+                # Saving (final 10% of the category slice)
+                _set_status(f"{cat_label}: Saving results…")
+                _set_progress(base + cat_share * (init_w + fetch_w + save_w * 0.5))
+                st.session_state[save_keys['list_key']] = res["list_values"] or []
+                st.session_state[save_keys['string_key']] = res["string_values"] or ""
+
+                # Category done
+                _set_status(f"{cat_label}: Complete.")
+                _set_progress(base + cat_share)  # reach the end of this category slice
+                base += cat_share
+
+            # ---- Run categories in order with granular progress ----
             if 'house' in ordered_sections:
-                _set_status("Finding House district(s)…")
-                house_res = _agol_intersect_adaptive(
-                    url=st.session_state['house_intersect']['url'],
-                    layer=st.session_state['house_intersect']['layer'],
-                    geometry=geom,
-                    fields="GlobalID,DISTRICT",
-                    return_geometry=False,
-                    list_values="GlobalID",
-                    string_values="DISTRICT",
-                    enable_route_chunking=enable_route_chunking,
-                    enable_polygon_chunking=enable_polygon_chunking,
+                _run_category(
+                    "House district(s)",
+                    intersect_cfg=dict(
+                        url=st.session_state['house_intersect']['url'],
+                        layer=st.session_state['house_intersect']['layer'],
+                        fields="GlobalID,DISTRICT",
+                        list_values="GlobalID",
+                        string_values="DISTRICT",
+                    ),
+                    save_keys=dict(list_key='house_list', string_key='house_string'),
                 )
-                st.session_state['house_list'] = house_res["list_values"] or []
-                st.session_state['house_string'] = house_res["string_values"] or ""
-                completed += 1
-                progress_bar.progress(int(completed * 100 / total))
 
-            # --- Senate ---
             if 'senate' in ordered_sections:
-                _set_status("Finding Senate district(s)…")
-                senate_res = _agol_intersect_adaptive(
-                    url=st.session_state['senate_intersect']['url'],
-                    layer=st.session_state['senate_intersect']['layer'],
-                    geometry=geom,
-                    fields="GlobalID,DISTRICT",
-                    return_geometry=False,
-                    list_values="GlobalID",
-                    string_values="DISTRICT",
-                    enable_route_chunking=enable_route_chunking,
-                    enable_polygon_chunking=enable_polygon_chunking,
+                _run_category(
+                    "Senate district(s)",
+                    intersect_cfg=dict(
+                        url=st.session_state['senate_intersect']['url'],
+                        layer=st.session_state['senate_intersect']['layer'],
+                        fields="GlobalID,DISTRICT",
+                        list_values="GlobalID",
+                        string_values="DISTRICT",
+                    ),
+                    save_keys=dict(list_key='senate_list', string_key='senate_string'),
                 )
-                st.session_state['senate_list'] = senate_res["list_values"] or []
-                st.session_state['senate_string'] = senate_res["string_values"] or ""
-                completed += 1
-                progress_bar.progress(int(completed * 100 / total))
 
-            # --- Borough ---
             if 'borough' in ordered_sections:
-                _set_status("Finding Borough/Census Area(s)…")
-                borough_res = _agol_intersect_adaptive(
-                    url=st.session_state['borough_intersect']['url'],
-                    layer=st.session_state['borough_intersect']['layer'],
-                    geometry=geom,
-                    fields="GlobalID,NameAlt",
-                    return_geometry=False,
-                    list_values="GlobalID",
-                    string_values="NameAlt",
-                    enable_route_chunking=enable_route_chunking,
-                    enable_polygon_chunking=enable_polygon_chunking,
+                _run_category(
+                    "Borough/Census Area(s)",
+                    intersect_cfg=dict(
+                        url=st.session_state['borough_intersect']['url'],
+                        layer=st.session_state['borough_intersect']['layer'],
+                        fields="GlobalID,NameAlt",
+                        list_values="GlobalID",
+                        string_values="NameAlt",
+                    ),
+                    save_keys=dict(list_key='borough_list', string_key='borough_string'),
                 )
-                st.session_state['borough_list'] = borough_res["list_values"] or []
-                st.session_state['borough_string'] = borough_res["string_values"] or ""
-                completed += 1
-                progress_bar.progress(int(completed * 100 / total))
 
-            # --- Region ---
             if 'region' in ordered_sections:
-                _set_status("Finding DOT&PF Region(s)…")
-                region_res = _agol_intersect_adaptive(
-                    url=st.session_state['region_intersect']['url'],
-                    layer=st.session_state['region_intersect']['layer'],
-                    geometry=geom,
-                    fields="GlobalID,NameAlt",
-                    return_geometry=False,
-                    list_values="GlobalID",
-                    string_values="NameAlt",
-                    enable_route_chunking=enable_route_chunking,
-                    enable_polygon_chunking=enable_polygon_chunking,
+                _run_category(
+                    "DOT&PF Region(s)",
+                    intersect_cfg=dict(
+                        url=st.session_state['region_intersect']['url'],
+                        layer=st.session_state['region_intersect']['layer'],
+                        fields="GlobalID,NameAlt",
+                        list_values="GlobalID",
+                        string_values="NameAlt",
+                    ),
+                    save_keys=dict(list_key='region_list', string_key='region_string'),
                 )
-                st.session_state['region_list'] = region_res["list_values"] or []
-                st.session_state['region_string'] = region_res["string_values"] or ""
-                completed += 1
-                progress_bar.progress(int(completed * 100 / total))
 
-            # Optional final tick/status (still inside the container)
-            progress_bar.progress(100)
+            # Done
             _set_status("Geography queries complete.")
+            _set_progress(1.0)
 
     finally:
         # Clear the ENTIRE block (headline + status + bar) at the very end.

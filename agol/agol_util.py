@@ -221,7 +221,7 @@ def query_record(url: str, layer: int, where: str, fields="*", return_geometry=F
 # =============================================================================
 def aashtoware_geometry(awp_contract_id):
 
-    points = {}
+    points = []
 
     geom_sel = select_record(
         url=st.session_state['aashtoware_url'],
@@ -231,6 +231,8 @@ def aashtoware_geometry(awp_contract_id):
         fields = "*"
     )
 
+    st.session_state['debug'] = geom_sel
+
     for feat in geom_sel or []:
         a = feat.get("attributes", {})
         ptype = a.get("TYPE")
@@ -239,18 +241,14 @@ def aashtoware_geometry(awp_contract_id):
         if not ptype:
             continue
 
-        points[ptype] = {
+        points.append({
             "contract_id": a.get("CONTRACT_Id"),
-            "description": a.get("DESCRIPTION"),
+            'type': ptype,
+            "route_id": a.get('Route_Name'),
+            'route_name': a.get('Route_Description'),
             "lat": a.get("DECIMALLATITUDE"),
             "lon": a.get("DECIMALLONGITUDE"),
-            # include extras if you want:
-            #"objectid": a.get("OBJECTID"),
-            # "format": a.get("FORMAT"),
-            # "latitude_dms": a.get("LATITUDE"),
-            # "longitude_dms": a.get("LONGITUDE"),
-            # "description": a.get("DESCRIPTION"),
-        }
+        })
 
     return points
 

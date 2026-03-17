@@ -1,72 +1,5 @@
-"""
-===============================================================================
-LOAD PROJECT (STREAMLIT) — APEX / AGOL UPLOAD ORCHESTRATION
-===============================================================================
-
-Purpose:
-    Orchestrates the Streamlit workflow for uploading a project and its related
-    datasets into APEX (AGOL-backed) layers using AGOLDataLoader.
-
-    This module:
-      - Builds payloads using the payload factory functions (payloads.py)
-      - Uploads records to the appropriate AGOL layers in a defined sequence
-      - Reports per-step success/failure to the Streamlit UI
-      - Aggregates failures and summarizes them (no automatic deletion)
-
-Key behaviors:
-    Upload order (and failure semantics):
-      1) Project
-         - HARD STOP if this fails (st.stop()) because dependent uploads require
-           the created GlobalID.
-      2) Geometry
-         - May upload one or multiple geometry payloads
-         - Aggregates per-geometry failures for clear user feedback
-      3) Communities (optional)
-      4) Contacts (optional)   # (contacts not in this function; reserved)
-      5) Geography layers (optional; depends on presence of {name}_list keys)
-      6) Traffic impact artifacts (silent; failures summarized at the end)
-
-    Failure handling pattern:
-      - Project failure: show error, record failure with step name, and st.stop()
-      - Downstream failure(s): record failures with step names; at end, present
-        a clear summary of which steps failed. No automatic deletion is performed.
-
-Session-state dependencies (expected at runtime):
-    Connection:
-      - 'apex_url'
-
-    Layer IDs:
-      - 'projects_layer', 'sites_layer', 'routes_layer', 'boundaries_layer'
-      - 'impact_comms_layer', 'contacts_layer'  # contacts not used in this file
-      - 'region_layer', 'bor_layer', 'house_layer', 'senate_layer'
-      - optional: 'impact_routes_layer' (used when route or boundary selected)
-      - 'traffic_impacts', 'start_points', 'end_points'
-
-    Geometry selection flags:
-      - 'selected_point', 'selected_route', 'selected_boundary'
-
-    Geography presence flags:
-      - '{name}_list' keys (e.g., 'region_list', 'borough_list', etc.)
-        NOTE: these keys gate whether the corresponding geography layer uploads.
-
-    Results / status:
-      - 'apex_globalid' (set after project upload)
-      - 'upload_complete' (set True when all steps succeed)
-
-    Error aggregation:
-      - 'step_failures' list (accumulated dicts: {'step': str, 'message': str})
-
-Notes:
-    - This module is intentionally UI-driven: it uses Streamlit spinners, success/
-      error messages, and session_state to communicate status.
-    - No automatic cleanup is attempted on error.
-===============================================================================
-"""
-
 from __future__ import annotations
-
 import streamlit as st
-
 from agol.agol_util import AGOLDataLoader, format_guid, delete_cascade_by_globalid
 from agol.agol_payloads import (
     communities_payload,
@@ -84,23 +17,52 @@ def _record_failure(step: str, message: str) -> None:
     st.session_state["step_failures"].append({"step": step, "message": str(message)})
 
 
-# =============================================================================
-# ENTRYPOINT: PROJECT + RELATED DATASETS UPLOAD
-# =============================================================================
 def load_project_apex() -> None:
     """
     Upload the current Streamlit session's project and related records into APEX.
-
-    Failure handling:
-        - Project upload failure is a hard stop (st.stop()) because the GlobalID
-          is required for all dependent payloads.
-        - Subsequent failures are collected into st.session_state['step_failures'].
-          At the end, a summary of failed steps is displayed. No deletion is attempted.
-
-    Returns:
-        None (side effects only: Streamlit UI + st.session_state updates).
+    Returns: None (side effects only: Streamlit UI + st.session_state updates).
     """
 
+    # -------------------------------------------------------------------------
+    # IDEMPOTENCY GUARD: if upload already completed and we have a GlobalID,
+    # don't run any upload logic again on reruns.
+    # -------------------------------------------------------------------------
+    if st.session_state.get("upload_complete") and st.session_state.get("apex_globalid"):
+        st.success("LOAD PROJECT: SUCCESS ✅")
+
+        # Post-upload actions (no URLs; use centralized return_navigation)
+        from app import return_navigation  # safe: app has no side-effects on import
+
+        guid_val = st.session_state.get("apex_globalid", "")
+        guid_clean = str(guid_val).strip("{}")
+        set_year = st.session_state.get("set_year")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("RETURN TO LOADER", use_container_width=True):
+                return_navigation(
+                    version="loader",
+                    set_year=set_year,
+                    init_run=True,
+                    suppress_loader_once=True,
+                    hard_reset=True,          # << clear entire session
+                    reset_loader_step=True    # << force loader_step = 1
+                )
+                st.stop()
+
+        with c2:
+            if st.button("MANAGE PROJECT", use_container_width=True):
+                return_navigation(
+                    version="manager",
+                    guid=guid_clean,
+                    init_run=True,
+                    hard_reset=True           # << clear entire session
+                )
+                st.stop()
+
+        return  # prevent any further execution
+
+    # ====================== original function continues below =====================
     spinner_container = st.empty()
 
     # -------------------------------------------------------------------------
@@ -119,8 +81,8 @@ def load_project_apex() -> None:
             )
         except Exception as e:
             load_project = {"success": False, "message": f"Project payload error: {e}"}
-    spinner_container.empty()
 
+    spinner_container.empty()
     if not load_project.get("success"):
         error_msg = load_project.get("message", "Unknown error")
         st.error(f"LOAD PROJECT: FAILURE ❌ {error_msg}")
@@ -130,7 +92,6 @@ def load_project_apex() -> None:
     # Project success
     st.session_state["apex_globalid"] = format_guid(load_project["globalids"])
     st.success("LOAD PROJECT: SUCCESS ✅")
-    
 
     # -------------------------------------------------------------------------
     # STEP 2: UPLOAD GEOMETRY (MAY BE MULTIPLE GEOMETRIES)
@@ -164,23 +125,27 @@ def load_project_apex() -> None:
             )
 
             for idx, geom in enumerate(geometries, start=1):
-                step_name = f"{geometry_type} #{idx}" if len(geometries) > 1 else geometry_type
+                step_name = (
+                    f"{geometry_type} #{idx}" if len(geometries) > 1 else geometry_type
+                )
                 if not geom:
                     msg = f"{step_name}: Empty geometry payload."
                     failures.append(msg)
                     _record_failure(step_name, msg)
                     continue
+
                 result = loader.add_features(geom)
                 if not result.get("success"):
                     msg = f"{step_name}: {result.get('message', 'Unknown geometry upload failure.')}"
                     failures.append(msg)
                     _record_failure(step_name, msg)
+
         except Exception as e:
             msg = f"Project Geometry payload error: {e}"
             failures.append(msg)
             _record_failure("Geometry", msg)
-    spinner_container.empty()
 
+    spinner_container.empty()
     if not failures:
         st.success("LOAD GEOMETRY: SUCCESS ✅")
     else:
@@ -198,7 +163,6 @@ def load_project_apex() -> None:
             "senate": st.session_state["senate_layer"],
             "house": st.session_state["house_layer"],
         }
-
         load_results = {}
         try:
             for name, layer_id in geography_layers.items():
@@ -211,12 +175,14 @@ def load_project_apex() -> None:
                             url=st.session_state["apex_url"], layer=layer_id
                         ).add_features(payload)
         except Exception as e:
-            load_results["__error__"] = {"success": False, "message": f"Geography payload error: {e}"}
-    spinner_container.empty()
+            load_results["__error__"] = {
+                "success": False,
+                "message": f"Geography payload error: {e}",
+            }
 
+    spinner_container.empty()
     failed_layers = []
     fail_messages = []
-
     for name, result in load_results.items():
         if name == "__error__":
             msg = result.get("message", "Unknown geography error.")
@@ -241,14 +207,12 @@ def load_project_apex() -> None:
     else:
         st.success("LOAD GEOGRAPHIES: SUCCESS ✅")
 
-            
     # # -------------------------------------------------------------------------
     # # STEP 4 (SILENT): IMPACT AREA APEX UPDATE
     # # -------------------------------------------------------------------------
     try:
         payload_location = location_payload()
         location_layer = st.session_state.get("locations_layer")  # adjust if needed
-
         if payload_location is None:
             load_location = None
         else:
@@ -264,10 +228,8 @@ def load_project_apex() -> None:
                         load_location.get("message", "Unknown error")
                     )
             else:
-                # Non-dict responses should be truthy to indicate success
                 if not bool(load_location):
                     _record_failure("Locations", "Unknown loader response")
-
     except Exception as e:
         _record_failure("Location Apex", f"Location payload error: {e}")
         load_location = {"success": False, "message": f"Location payload error: {e}"}
@@ -277,17 +239,12 @@ def load_project_apex() -> None:
         "location": load_location if "load_location" in locals() else None,
     }
 
-
-
     # -------------------------------------------------------------------------
-    # FINALIZATION: CLEANUP ON FAILURE OR MARK COMPLETE
+    # FINALization: CLEANUP ON FAILURE OR MARK COMPLETE
     # -------------------------------------------------------------------------
     if st.session_state.get("step_failures"):
         st.session_state["upload_complete"] = False
-
         st.error("UPLOAD FAILED ❌ One or more steps failed.")
-
-        # Show detailed failure list
         with st.expander("Failure details", expanded=True):
             for failure in st.session_state["step_failures"]:
                 if isinstance(failure, dict):
@@ -298,9 +255,6 @@ def load_project_apex() -> None:
                     msg = str(failure)
                 st.markdown(f"- **{step}**: {msg}")
 
-        # ---------------------------------------------------------
-        # Perform cleanup only if project was successfully created
-        # ---------------------------------------------------------
         if st.session_state.get("apex_globalid"):
             try:
                 cleaned = delete_cascade_by_globalid(
@@ -322,8 +276,6 @@ def load_project_apex() -> None:
                     globalid_value=st.session_state['apex_globalid'],
                     parent_field='parentglobalid',
                 )
-
-
                 if cleaned:
                     st.warning(
                         "Partial uploads were cleaned up (placeholder). "
@@ -334,29 +286,45 @@ def load_project_apex() -> None:
                         "Cleanup attempted but did not complete (placeholder). "
                         "Check logs or try again."
                     )
-
             except Exception as e:
                 st.error(f"Cleanup (placeholder) encountered an error: {e}")
-
         else:
             st.info(
                 "The project record was never created, so no cleanup was required. "
                 "Please correct the above issue(s) and try again."
             )
-
     else:
         st.session_state["upload_complete"] = True
-        st.write("")
-        st.markdown(
-            """
-            <h3 style="font-size:20px; font-weight:600;">
-                ✅ Upload Finished! Refresh the page to
-                <span style="font-weight:700;">add a new project</span>.
-            </h3>
-            """,
-            unsafe_allow_html=True,
-        )
 
-    
+    st.write("")
+    # -----------------------------
+    # ACTION BUTTONS — use return_navigation (hard reset)
+    # -----------------------------
+    from app import return_navigation
 
-    
+    guid_val = st.session_state.get("apex_globalid", "")
+    guid_clean = str(guid_val).strip("{}")
+    set_year = st.session_state.get("set_year")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("RETURN TO LOADER", use_container_width=True):
+            return_navigation(
+                version="loader",
+                set_year=set_year,
+                init_run=True,
+                suppress_loader_once=True,
+                hard_reset=True,          # << clear entire session
+                reset_loader_step=True    # << force loader_step = 1
+            )
+            st.stop()
+
+    with c2:
+        if st.button("MANAGE PROJECT", use_container_width=True):
+            return_navigation(
+                version="manager",
+                guid=guid_clean,
+                init_run=True,
+                hard_reset=True           # << clear entire session
+            )
+            st.stop()
