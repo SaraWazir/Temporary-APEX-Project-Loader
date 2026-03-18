@@ -243,19 +243,19 @@ def init_session_state():
     # Geography intersect services (used by district_queries / geography payloads)
     geography_intersects = {
         "region_intersect": {
-            "url": "https://services.arcgis.com/r4A0V7UzH9fcLVvv/arcgis/rest/services/STIP_DOT_PF_Regions/FeatureServer",
+            "url": "https://services.arcgis.com/r4A0V7UzH9fcLVvv/arcgis/rest/services/APEX_DOTPF_Regions/FeatureServer",
             "layer": 0
         },
         "borough_intersect": {
-            "url": "https://services.arcgis.com/r4A0V7UzH9fcLVvv/arcgis/rest/services/STIP_BoroughCensus/FeatureServer",
+            "url": "https://services.arcgis.com/r4A0V7UzH9fcLVvv/arcgis/rest/services/APEX_BoroughCensus/FeatureServer",
             "layer": 0
         },
         "senate_intersect": {
-            "url": "https://services.arcgis.com/r4A0V7UzH9fcLVvv/arcgis/rest/services/STIP_SenateDistricts/FeatureServer",
+            "url": "https://services.arcgis.com/r4A0V7UzH9fcLVvv/arcgis/rest/services/APEX_SenateDistricts/FeatureServer",
             "layer": 0
         },
         "house_intersect": {
-            "url": "https://services.arcgis.com/r4A0V7UzH9fcLVvv/arcgis/rest/services/STIP_HouseDistricts/FeatureServer",
+            "url": "https://services.arcgis.com/r4A0V7UzH9fcLVvv/arcgis/rest/services/APEX_HouseDistricts/FeatureServer",
             "layer": 0
         },
         "route_intersect": {
