@@ -331,8 +331,7 @@ def _render_original_form(is_awp: bool):
             cy_user = options_norm.get(norm(cy_user_raw), "")  # canonical option string if present
 
             saved_raw = st.session_state.get("construction_year", "")
-            saved = options_norm.get(norm(saved_raw), "")      # canonical option string if present
-
+            saved = options_norm.get(norm(saved_raw), "")  # canonical option string if present
             preferred_saved = cy_user or saved
 
             # Existing AWP years (may be comma-separated string or list)
@@ -371,29 +370,29 @@ def _render_original_form(is_awp: bool):
                 elif set_year_norm not in options_norm:
                     st.info(f"The input year '{set_year_raw}' does not match a construction year for this work.")
 
-            # Seed/repair widget state and compute index so Streamlit can't render blank
+            # --------- IMPORTANT CHANGE: do NOT pre-write st.session_state[wk] ----------
             wk = widget_key("construction_year", version, is_awp)
-            current_val = st.session_state.get(wk)
 
-            # If current value is missing/blank/invalid, force the computed default
-            if (
-                current_val is None
+            current_val = st.session_state.get(wk)  # whatever Streamlit already had persisted for this key
+            # Choose what to show this run without touching session_state yet
+            if (current_val is None
                 or (isinstance(current_val, str) and current_val.strip() == "")
-                or (current_val not in filtered_options)
-            ):
-                st.session_state[wk] = default_choice
+                or (current_val not in filtered_options)):
+                selected_val = default_choice
+            else:
+                selected_val = current_val
 
-            # Safety: derive index from the (possibly corrected) state value
+            # Safety: derive index from the target value (selected_val)
             try:
-                idx = filtered_options.index(st.session_state[wk])
+                idx = filtered_options.index(selected_val)
             except ValueError:
                 idx = 0
 
             selected_cy = st.selectbox(
                 "Construction Year ⮜",
                 filtered_options,
-                index=idx,              # Guarantees a visible selection
-                key=wk,
+                index=idx,             # Guarantees a visible selection
+                key=wk,                # Streamlit will set st.session_state[wk] after render
                 help="The project’s assigned year. Continuing projects must also receive a new year.",
             )
 
@@ -404,6 +403,7 @@ def _render_original_form(is_awp: bool):
             if selected_cy:
                 st.session_state["__cy_user"] = str(selected_cy)
 
+        # Phase
         if is_awp:
             with col2:
                 ro_widget(
@@ -420,6 +420,61 @@ def _render_original_form(is_awp: bool):
                     options=(st.session_state['phase_list']),
                     is_awp=is_awp,
                 )
+
+        col3, col4, col5 = st.columns(3)
+
+        # IRIS
+        with col3:
+            if is_awp:
+                with col3:
+                    ro_widget(
+                        key="iris",
+                        label="IRIS",
+                        value=fmt_string(val(AWP_FIELDS['iris'])),
+                    )
+            else:
+                with col3:
+                    st.session_state["iris"] = st.text_input(
+                    label="IRIS",
+                    key=widget_key("awp_iris", version, is_awp),
+                    value=st.session_state.get("iris", ''),
+                )
+
+        # STIP          
+        with col4:
+            if is_awp:
+                with col4:
+                    ro_widget(
+                        key="stip",
+                        label="STIP",
+                        value=fmt_string(val(AWP_FIELDS['stip'])),
+                    )
+            else:
+                with col4:
+                    st.session_state["stip"] = st.text_input(
+                    label="STIP",
+                    key=widget_key("awp_stip", version, is_awp),
+                    value=st.session_state.get("stip", ''),
+                )
+                    
+        
+        # FED        
+        with col5:
+            if is_awp:
+                with col5:
+                    ro_widget(
+                        key="fed_proj_num",
+                        label="Federal Project Number",
+                        value=fmt_string(val(AWP_FIELDS['fed_proj_num'])),
+                    )
+            else:
+                with col5:
+                    st.session_state["fed_proj_num"] = st.text_input(
+                    label="Federal Project Number",
+                    key=widget_key("awp_fed_proj_num", version, is_awp),
+                    value=st.session_state.get("fed_proj_num", ''),
+                )
+        
 
         st.write("")
         st.write("")

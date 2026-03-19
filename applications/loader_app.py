@@ -215,7 +215,7 @@ def run_loader_app():
     # Navigation controls
     # -------------------------------------------------------------------------
     st.write("")
-    cols = st.columns([1, 1, 4])
+    cols = st.columns([1, 1])
 
     step = st.session_state.loader_step
 
@@ -224,7 +224,7 @@ def run_loader_app():
 
         # Back button
         with cols[0]:
-            st.button("⬅️ Back", on_click=prev_step, disabled=step == 1)
+            st.button("⬅️ Back", on_click=prev_step, disabled=step == 1, use_container_width=True)
 
         # Next button logic
         with cols[1]:
@@ -239,7 +239,7 @@ def run_loader_app():
             elif step == 4:
                 can_proceed = True
             if step < TOTAL_STEPS:
-                st.button("Next ➡️", on_click=next_step, disabled=not can_proceed)
+                st.button("Next ➡️", on_click=next_step, disabled=not can_proceed, use_container_width=True)
 
         st.caption("Use Back and Next to navigate. Refresh will reset this session.")
 

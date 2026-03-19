@@ -12,6 +12,17 @@ from shapely.ops import transform
 import pyproj
 
 
+from typing import List, Sequence, Tuple, Literal
+from shapely.geometry import (
+    Point as ShapelyPoint,
+    LineString as ShapelyLineString,
+    MultiLineString as ShapelyMultiLineString,
+    Polygon as ShapelyPolygon,
+    MultiPolygon as ShapelyMultiPolygon,
+)
+from shapely.ops import transform, unary_union
+import pyproj
+
 def create_buffers(
     geometry_list: List[Sequence],
     geom_type: Literal["Point", "LineString", "Polygon", "point", "line", "linestring", "polygon"],
@@ -25,15 +36,16 @@ def create_buffers(
     resolution: int = 16,
 ) -> List[List[List[float]]]:
     """
-    Create buffers for input geometries and return list of buffer exterior rings in [lon, lat].
+    Create buffers for input geometries, dissolve them into a single (multi)polygon,
+    and return the merged buffer's exterior ring(s) in [lon, lat].
 
     Parameters
     ----------
     geometry_list : list
         List of geometries. Coordinates must be in [lon, lat] order for EPSG:4326 (or the CRS you pass).
-        - Point:      [lon, lat] or [[lon, lat]]
+        - Point: [lon, lat] or [[lon, lat]]
         - LineString: [[lon, lat], [lon, lat], ...]
-        - Polygon:    [[lon, lat], ..., [lon, lat]] (closed or open ring)
+        - Polygon: [[lon, lat], ..., [lon, lat]] (closed or open ring)
     geom_type : {"Point","LineString","Polygon"} (case-insensitive; "Line" also allowed)
         The geometry type of items in geometry_list.
     distance_m : float
@@ -50,16 +62,15 @@ def create_buffers(
     Returns
     -------
     List[List[List[float]]]
-        For each input geometry, returns the exterior ring of its buffer polygon
-        as a closed list of [lon, lat] coordinates.
+        Exterior ring(s) of the merged buffer polygon(s) as closed lists of [lon, lat] coordinates.
+        If the merge produces multiple disjoint polygons, one ring per polygon is returned.
+        (Holes are not included—consistent with previous behavior.)
     """
-
     # Shapely accepts integer codes for cap/join styles:
     # cap_style: round=1, flat=2, square=3
     # join_style: round=1, mitre/miter=2, bevel=3
     cap_lookup = {"round": 1, "flat": 2, "square": 3}
     join_lookup = {"round": 1, "mitre": 2, "miter": 2, "bevel": 3}
-
     cap_key = cap_style.lower()
     join_key = join_style.lower()
     if cap_key not in cap_lookup:
@@ -94,13 +105,11 @@ def create_buffers(
             else:
                 lon, lat = item[0]  # type: ignore
             return ShapelyPoint((float(lon), float(lat)))
-
         elif gt == "linestring":
             if isinstance(item, (ShapelyLineString, ShapelyMultiLineString)):
                 return item
             coords = _as_lonlat_tuples(item)  # type: ignore
             return ShapelyLineString(coords)
-
         elif gt == "polygon":
             if isinstance(item, (ShapelyPolygon, ShapelyMultiPolygon)):
                 return item
@@ -112,32 +121,46 @@ def create_buffers(
                 ring = ring + [ring[0]]
             coords = _as_lonlat_tuples(ring)
             return ShapelyPolygon(coords)
-
         raise ValueError("Unsupported geometry type")
 
-    buffers_lonlat: List[List[List[float]]] = []
-
+    # --- Build per-item geometries in projected CRS and buffer them ---
+    buffered_parts = []
     for item in geometry_list:
         geom_in = build_geom(item)
         geom_proj = transform(to_proj, geom_in)
-
         buf_proj = geom_proj.buffer(
             distance_m,
             resolution=resolution,
             cap_style=cap_lookup[cap_key],
             join_style=join_lookup[join_key],
         )
+        buffered_parts.append(buf_proj)
 
-        buf_out = transform(to_out, buf_proj)
+    if not buffered_parts:
+        return []
 
-        # Extract exterior ring only, keep [lon, lat] order
-        ext_coords = [[float(x), float(y)] for (x, y) in buf_out.exterior.coords]
+    # --- Merge (dissolve) all buffers into one (multi)polygon ---
+    merged_proj = unary_union(buffered_parts)
 
-        # Ensure closed ring
+    # --- Transform back to output CRS and extract exterior ring(s) only ---
+    merged_out = transform(to_out, merged_proj)
+
+    buffers_lonlat: List[List[List[float]]] = []
+
+    if isinstance(merged_out, ShapelyPolygon):
+        ext_coords = [[float(x), float(y)] for (x, y) in merged_out.exterior.coords]
         if ext_coords[0] != ext_coords[-1]:
             ext_coords.append(ext_coords[0])
-
         buffers_lonlat.append(ext_coords)
+    elif isinstance(merged_out, ShapelyMultiPolygon):
+        for poly in merged_out.geoms:
+            ext_coords = [[float(x), float(y)] for (x, y) in poly.exterior.coords]
+            if ext_coords[0] != ext_coords[-1]:
+                ext_coords.append(ext_coords[0])
+            buffers_lonlat.append(ext_coords)
+    else:
+        # In edge cases (e.g., empty result), return []
+        return []
 
     return buffers_lonlat
 

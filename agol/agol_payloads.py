@@ -221,7 +221,6 @@ def str_to_int(value):
 # =============================================================================
 def project_payload():
     try:
-        
         # Determine center based on selected geometry
         if st.session_state.get("selected_point"):
             proj_type = "Site"
@@ -230,14 +229,12 @@ def project_payload():
         elif st.session_state.get("selected_boundary"):
             proj_type = "Boundary"
 
-
         # Create Buffer Version of Geometry for Geospatial Base
         geoms = st.session_state.get("project_geom")
         geom_type = (st.session_state.get("project_geom_type") or "").lower()
-
         if not geoms or not isinstance(geoms, (list, tuple)):
             raise RuntimeError("No project geometries available in session.")
-        
+
         # Normalize single point -> list of one point (NO ORDER SWAP)
         if (
             isinstance(geoms, (list, tuple))
@@ -271,10 +268,8 @@ def project_payload():
                 else:
                     lines.append(coords)
 
-        # --- Create buffers (10 m fixed) ---
+        # --- Create buffers (fixed distances by kind) ---
         buffers = []
-    
-        # If a single declared type is provided, respect it. Otherwise, rely on split result.
         if geom_type in ("point",):
             if points:
                 buffers += create_buffers(geometry_list=points, geom_type="point", distance_m=100)
@@ -294,13 +289,16 @@ def project_payload():
                 buffers += create_buffers(geometry_list=polys, geom_type="polygon", distance_m=1)
 
         if not buffers:
-            raise RuntimeError("Buffering produced no output (check geometry and 10 m distance).")
+            raise RuntimeError("Buffering produced no output (check geometry and distances).")
 
         # --- ESRI Polygon geometry (multipart via rings) ---
         esri_polygon = {
             "rings": buffers,  # list of rings (each is [[lon, lat], ...])
             "spatialReference": {"wkid": 4326},
         }
+
+        # >>> NEW: expose this polygon for Traffic Impact fallback use <<<
+        st.session_state["project_esri_polygon"] = esri_polygon
 
         # Build payload with .get() and default None
         payload = {
@@ -315,7 +313,7 @@ def project_payload():
                         "Phase": st.session_state.get("phase", None),
                         "IRIS": st.session_state.get("iris", None),
                         "STIP": st.session_state.get("stip", None),
-                        "Fed_Proj_Num": st.session_state.get("fed_proj_num", None),                     
+                        "Fed_Proj_Num": st.session_state.get("fed_proj_num", None),
                         "Fund_Type": st.session_state.get("fund_type", None),
                         "Proj_Prac": st.session_state.get("proj_prac", None),
                         "Anticipated_Start": st.session_state.get("anticipated_start", None),
@@ -752,10 +750,91 @@ def geography_payload(name: str):
 
     return clean_payload(payload, 'adds')
 
+
+
+
+
+def parent_traffic_impact_payload():
+    try:
+        # Use the polygon produced during project payload build
+        esri_polygon_input = st.session_state.get("project_esri_polygon")
+        if not isinstance(esri_polygon_input, dict) or "rings" not in esri_polygon_input:
+            raise RuntimeError("Missing or invalid project_esri_polygon (expected ESRI polygon dict with 'rings').")
+
+        # If you want a tiny expansion, buffer the rings; otherwise, you could skip buffering and use esri_polygon_input directly.
+        rings = esri_polygon_input.get("rings")  # <-- list of rings (each: [[lon,lat], ...])
+        buffers = create_buffers(geometry_list=rings, geom_type="polygon", distance_m=1000)
+        if not buffers:
+            raise RuntimeError("Buffering produced no output (check geometry and distances).")
+
+        esri_polygon = {
+            "rings": buffers,
+            "spatialReference": {"wkid": 4326},
+        }
+
+        # Build a single valid feature combining attributes + geometry
+        feature = {
+            "attributes": {
+                "Event_Name": "Unnamed Event",
+                "DOT_PF_Proj_Phone_COMM": "NIE",
+                "Agency_Name_COMM": "NIE",
+                "Agency_Phone_COMM": "NIE",
+                "Contractor_Name_COMM": "NIE",
+                "Contractor_Phone_COMM": "NIE",
+                "Event_Type_COMM": "Roadwork / Maintenance",
+                "Full_Closure_COMM": "NIE",
+                "Status_COMM": "NIE",
+                "Description_COMM": "NIE",
+                "Broadcast_COMM": "NIE",
+                "Notes_for_Approver": "No Notes",
+                "Notes_for_Next_Week": "No Notes",
+                "Drafter": "Unassigned",
+                "Approver": "Unassigned",
+                "APEX_GUID": st.session_state.get("apex_globalid").strip("{}"),
+                "AWP_Proj_Name": st.session_state.get("awp_proj_name"),
+                "Proj_Name": st.session_state.get("proj_name"),
+                "APEX_Database_Status": "Review: Awaiting Review",
+            },
+            "geometry": esri_polygon,
+        }
+
+        payload = {"adds": [feature]}
+        return clean_payload(payload, "adds")
+
+    except Exception as e:
+        # Bubble up error so caller can handle with st.error
+        raise RuntimeError(f"Error building parent traffic impact payload: {e}")
     
 
 
-def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -> dict:
+def child_traffic_impact_payload():
+
+    try:
+        if st.session_state.get('load_ti_guid', None):
+            guid = st.session_state['load_ti_guid']
+
+        # Build payload with attributes (required by /addFeatures on related tables)
+        payload = {
+            "adds": [
+                {
+                    "attributes": {
+                        "parentglobalid": guid # e.g., d8f0951c-4259-4077-bf41-9646bc0fe2a3
+                    }
+                }
+            ]
+        }
+        
+        return clean_payload(payload, 'adds')
+    
+    except Exception as e:
+        # Bubble up error so caller can handle with st.error
+        raise RuntimeError(f"Error building child traffic impact payload: {e}")
+    
+
+
+           
+
+def manage_traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -> dict:
     """
     Build ArcGIS applyEdits payloads for:
     - parent (Traffic Impact polygon)
@@ -802,7 +881,6 @@ def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -
         "end"   : {<applyEdits section>}
     }
     """
-    import streamlit as st
 
     if not isinstance(package, dict):
         raise ValueError("package must be a dict produced by the selector")
@@ -881,7 +959,6 @@ def traffic_impact_payloads(package: dict, edit_type=None, which: str = "all") -
                     "Start_Y":                (sp[1] if isinstance(sp, (list, tuple)) and len(sp) == 2 else None),
                     "End_X":                  (ep[0] if isinstance(ep, (list, tuple)) and len(ep) == 2 else None),
                     "End_Y":                  (ep[1] if isinstance(ep, (list, tuple)) and len(ep) == 2 else None),
-                    "Alaska_511_COMM":        "No",
                     "DOT_PF_Proj_Phone_COMM": "NIE",
                     "Agency_Name_COMM":       "NIE",
                     "Agency_Phone_COMM":      "NIE",

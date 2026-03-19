@@ -10,7 +10,7 @@ from util.geospatial_util import create_buffers
 from agol.agol_util import select_record
 # NEW imports for deployment helper
 from agol.agol_util import AGOLDataLoader  # AGOL applyEdits wrapper (add/update/delete)
-from agol.agol_payloads import traffic_impact_payloads  # builds the 4 payloads from the package
+from agol.agol_payloads import manage_traffic_impact_payloads  # builds the 4 payloads from the package
 
 
 # ------------------------------------------------------------
@@ -298,7 +298,7 @@ def _deploy_to_agol(
 
         # Phase 1: build & add PARENT via payload builder
         st.session_state["traffic_impact_globalid"] = None  # clear stale
-        parent_only = traffic_impact_payloads(package, edit_type="adds", which="parent")
+        parent_only = manage_traffic_impact_payloads(package, edit_type="adds", which="parent")
         parent_section = parent_only.get("parent", {})
 
         progress.progress(0 / total, text=f"{step_names['parent']}: preparing...")
@@ -319,7 +319,7 @@ def _deploy_to_agol(
         st.session_state["traffic_impact_globalid"] = new_guid
 
         # Phase 2: build & add CHILDREN now that GUID is known
-        children_only = traffic_impact_payloads(package, edit_type="adds", which="children")
+        children_only =  manage_traffic_impact_payloads(package, edit_type="adds", which="children")
         for i, key in enumerate(("route", "start", "end"), start=2):
             progress.progress((i - 1) / total, text=f"{step_names[key]}: preparing...")
             mode, adapted = _adapt_for_loader("adds", children_only.get(key, {}))
@@ -334,7 +334,7 @@ def _deploy_to_agol(
     # ---------- UPDATES / DELETES (single-pass) ----------
     order = (["parent", "route", "start", "end"] if edit_type in ("adds", "updates")
              else ["start", "end", "route", "parent"])
-    payloads = traffic_impact_payloads(package, edit_type=edit_type, which="all")
+    payloads =  manage_traffic_impact_payloads(package, edit_type=edit_type, which="all")
 
     progress = _progress_init(0, text=f"Starting {edit_type}...")
     total = len(order)
@@ -594,7 +594,16 @@ def manage_traffic_impacts():
                             edit_type="updates",
                             progress_placeholder=progress_placeholder,
                         )
-                        # progress_placeholder.empty() # uncomment to clear the bar after completion
+                        # 🔽 NEW: force-refresh from AGOL so the tab label picks up the new Event_Name
+                        impact_area = st.session_state.get("impact_area")
+                        pulled = fetch_traffic_impacts(force=True)  # re-pull authoritative list (includes updated Event_Name)
+                        st.session_state["tie_events"] = []
+                        st.session_state["tie_next_id"] = 1
+                        for rec in (pulled or []):
+                            st.session_state["tie_events"].append(
+                                _event_from_record(rec, impact_area_default=impact_area)
+                            )
+                        # Rerun to render updated tabs (labels now reflect updated Event_Name)
                         st.rerun()
             with btn_col2:
                 if st.button("DELETE", use_container_width=True, key=f"{key_prefix}btn_delete"):
