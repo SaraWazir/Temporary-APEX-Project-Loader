@@ -92,7 +92,7 @@ from util.map_util import (
 from agol.agol_util import (
     get_multiple_fields,
     select_record,
-    get_unique_field_values, 
+    get_routes_within_distance, 
     query_routes_within_buffer)
 
 # Data Helpers Create Buffer
@@ -1555,10 +1555,6 @@ def aashtoware_path(points, container):
 
 
 
-# If you want explicit imports, uncomment these lines (match your project paths):
-# from util.geometry_util import geometry_to_folium, ro_widget, fmt_string, set_bounds_boundary
-# from util.geospatial_util import query_routes_within_buffer
-
 def select_route_and_points(container, key_prefix: str = "", is_existing: bool = False, package=None):
     """
     One-step UI (pure selector):
@@ -1567,12 +1563,10 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     - When Select Route is active → map clicks select a route
     - When Start/End active → map clicks snap endpoints
     - Draw order: Impact Area → Routes → Project Geometry → Markers
-
     VIEWPORT POLICY (fit_bounds every render):
     - The map always calls `fit_bounds(bounds)` to the current project/area on render.
     - Segmented-control changes do not change which area we fit to; they only change click behavior.
     """
-    
 
     # --- Headings (contextual) ---
     if not is_existing:
@@ -1614,6 +1608,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
             from shapely.geometry import LineString, Point
             from shapely.ops import transform as shp_transform
             from pyproj import Transformer
+
             to_merc = Transformer.from_crs(4326, 3857, always_xy=True).transform
             ln = shp_transform(to_merc, LineString(line_lonlat))
             pt = shp_transform(to_merc, Point(click_lonlat))
@@ -1640,6 +1635,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     def _haversine(lon1, lat1, lon2, lat2):
         R = 6371000.0
         import math as _m
+
         phi1, phi2 = _m.radians(lat1), _m.radians(lat2)
         dphi = _m.radians(lat2 - lat1)
         dlmb = _m.radians(lon2 - lon1)
@@ -1703,9 +1699,9 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     # --- OID persistence: normalize & cache IDs for existing items ---
     # ----------------------------------------------------------------
     oid_parent_key = f"{key_prefix}ti_parent_oid"
-    oid_route_key  = f"{key_prefix}ti_route_oid"
-    oid_start_key  = f"{key_prefix}ti_start_oid"
-    oid_end_key    = f"{key_prefix}ti_end_oid"
+    oid_route_key = f"{key_prefix}ti_route_oid"
+    oid_start_key = f"{key_prefix}ti_start_oid"
+    oid_end_key = f"{key_prefix}ti_end_oid"
 
     def _norm_parent_oid(src: dict):
         if not isinstance(src, dict): return None
@@ -1716,7 +1712,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         return (
             src.get("route_objectid") or src.get("routeObjectId") or src.get("route_OBJECTID"),
             src.get("start_objectid") or src.get("startObjectId") or src.get("start_OBJECTID"),
-            src.get("end_objectid")   or src.get("endObjectId")   or src.get("end_OBJECTID"),
+            src.get("end_objectid") or src.get("endObjectId") or src.get("end_OBJECTID"),
         )
 
     if is_existing and isinstance(package, dict):
@@ -1924,19 +1920,19 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                     package["route_name"] = st.session_state[ti_key]["route_name"]
                     package["route_geom"] = st.session_state[ti_key]["route_geom"]
 
-                    # --- NAME from route_name (existing only) ---
-                    if is_existing and package.get("route_name"):
-                        package["name"] = f"Traffic Impact @ {package['route_name']}"
+                # --- NAME from route_name (existing only) ---
+                if is_existing and package.get("route_name"):
+                    package["name"] = f"Traffic Impact @ {package['route_name']}"
 
-                    # Re-attach IDs after route change if needed
-                    if "objectid" not in package and st.session_state.get(oid_parent_key) is not None:
-                        package["objectid"] = st.session_state[oid_parent_key]
-                    if "route_objectid" not in package and st.session_state.get(oid_route_key) is not None:
-                        package["route_objectid"] = st.session_state[oid_route_key]
-                    if "start_objectid" not in package and st.session_state.get(oid_start_key) is not None:
-                        package["start_objectid"] = st.session_state[oid_start_key]
-                    if "end_objectid" not in package and st.session_state.get(oid_end_key) is not None:
-                        package["end_objectid"] = st.session_state[oid_end_key]
+                # Re-attach IDs after route change if needed
+                if "objectid" not in package and st.session_state.get(oid_parent_key) is not None:
+                    package["objectid"] = st.session_state[oid_parent_key]
+                if "route_objectid" not in package and st.session_state.get(oid_route_key) is not None:
+                    package["route_objectid"] = st.session_state[oid_route_key]
+                if "start_objectid" not in package and st.session_state.get(oid_start_key) is not None:
+                    package["start_objectid"] = st.session_state[oid_start_key]
+                if "end_objectid" not in package and st.session_state.get(oid_end_key) is not None:
+                    package["end_objectid"] = st.session_state[oid_end_key]
 
                 # Reset click
                 try:
@@ -1944,6 +1940,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                     st.session_state[map_key]["last_clicked"] = None
                 except Exception:
                     pass
+
                 st.rerun()
             else:
                 st.session_state[tol_key] = True
@@ -1983,19 +1980,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     # Build map (always fit to area)
     # ------------------------------------------------------
     m = folium.Map(control_scale=True)
-
-    # # Impact Area
-    # if is_existing and area_for_display:
-    #     for ring_lonlat in area_for_display:
-    #         geometry_to_folium(
-    #             ring_lonlat,
-    #             color="#e64a19",
-    #             weight=2,
-    #             fill=True,
-    #             fill_color="#ff7043",
-    #             fill_opacity=0.30,
-    #             feature_type="polygon",
-    #         ).add_to(m)
 
     # Routes (when selecting) OR the selected route (other modes)
     if place_mode == "1. Select Route":
@@ -2061,6 +2045,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         st.session_state.get(f"{key_prefix}selected_end_point")
         or st.session_state.get(ti_key, {}).get("end_point")
     )
+
     if isinstance(start_pt, dict) and start_pt.get("lonlat"):
         geometry_to_folium(
             [start_pt["lonlat"]],
@@ -2076,7 +2061,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
             tooltip="End"
         ).add_to(m)
 
-    # ---- FIT-BOUNDS (ALWAYS) ----
+    # ---- FIT-BOUNDS ----
     def _compute_bounds(geom):
         if not geom:
             return None
@@ -2109,13 +2094,30 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         except Exception:
             return None
 
-    preferred_fit_geom = (
-        st.session_state.get("apex_proj_area")
-        or st.session_state.get(fit_geom_key)
-        or area_for_display
-        or st.session_state.get("impact_area")  # ← NEW guaranteed fallback
-    )
-    bounds = _compute_bounds(preferred_fit_geom)
+    # >>> CHANGE: Prefer Start/End bounds when existing and both valid; else keep previous behavior.
+    if (
+        is_existing
+        and isinstance(start_pt, dict) and start_pt.get("lonlat")
+        and isinstance(end_pt, dict) and end_pt.get("lonlat")
+    ):
+        # Build bounds from just the two endpoints (lon/lat preserved)
+        s_lon, s_lat = start_pt["lonlat"]
+        e_lon, e_lat = end_pt["lonlat"]
+        south, north = min(s_lat, e_lat), max(s_lat, e_lat)
+        west, east = min(s_lon, e_lon), max(s_lon, e_lon)
+        # Add a tiny padding to avoid an overly tight box
+        pad = 1e-5
+        bounds = [[south - pad, west - pad], [north + pad, east + pad]]
+    else:
+        preferred_fit_geom = (
+            st.session_state.get("apex_proj_area")
+            or st.session_state.get(fit_geom_key)
+            or area_for_display
+            or st.session_state.get("impact_area")  # ← guaranteed fallback
+        )
+        bounds = _compute_bounds(preferred_fit_geom)
+    # <<< CHANGE END
+
     if bounds:
         m.fit_bounds(bounds)
 
@@ -2158,29 +2160,29 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
             route_oid, start_oid, end_oid = _norm_child_oids(package)
             route_oid = route_oid or st.session_state.get(oid_route_key)
             start_oid = start_oid or st.session_state.get(oid_start_key)
-            end_oid   = end_oid   or st.session_state.get(oid_end_key)
+            end_oid = end_oid or st.session_state.get(oid_end_key)
 
             if parent_oid is not None:
                 package["objectid"] = parent_oid
-                for alt in ("OBJECTID", "objectId", "ti_objectid"):
-                    package.pop(alt, None)
+            for alt in ("OBJECTID", "objectId", "ti_objectid"):
+                package.pop(alt, None)
             if route_oid is not None:
                 package["route_objectid"] = route_oid
-                for alt in ("routeObjectId", "route_OBJECTID"):
-                    package.pop(alt, None)
+            for alt in ("routeObjectId", "route_OBJECTID"):
+                package.pop(alt, None)
             if start_oid is not None:
                 package["start_objectid"] = start_oid
-                for alt in ("startObjectId", "start_OBJECTID"):
-                    package.pop(alt, None)
+            for alt in ("startObjectId", "start_OBJECTID"):
+                package.pop(alt, None)
             if end_oid is not None:
                 package["end_objectid"] = end_oid
-                for alt in ("endObjectId", "end_OBJECTID"):
-                    package.pop(alt, None)
+            for alt in ("endObjectId", "end_OBJECTID"):
+                package.pop(alt, None)
 
-            # --- NAME from route_name (existing only) ---
-            rn = package.get("route_name")
-            if isinstance(rn, str) and rn.strip():
-                package["name"] = f"Traffic Impact @ {rn.strip()}"
+        # --- NAME from route_name (existing only) ---
+        rn = package.get("route_name")
+        if isinstance(rn, str) and rn.strip():
+            package["name"] = f"Traffic Impact @ {rn.strip()}"
 
         # Require route + both points before returning a package
         has_route = bool(ti_final.get("route_id") and ti_final.get("route_geom"))

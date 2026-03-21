@@ -272,21 +272,21 @@ def project_payload():
         buffers = []
         if geom_type in ("point",):
             if points:
-                buffers += create_buffers(geometry_list=points, geom_type="point", distance_m=100)
+                buffers += create_buffers(geometry_list=points, geom_type="point", distance_m=.0001)
         elif geom_type in ("line", "linestring"):
             if lines:
-                buffers += create_buffers(geometry_list=lines, geom_type="line", distance_m=50)
+                buffers += create_buffers(geometry_list=lines, geom_type="line", distance_m=.0001)
         elif geom_type in ("polygon",):
             if polys:
-                buffers += create_buffers(geometry_list=polys, geom_type="polygon", distance_m=1)
+                buffers += create_buffers(geometry_list=polys, geom_type="polygon", distance_m=.0001)
         else:
             # Fallback: make buffers for whatever was detected
             if points:
-                buffers += create_buffers(geometry_list=points, geom_type="point", distance_m=100)
+                buffers += create_buffers(geometry_list=points, geom_type="point", distance_m=.0001)
             if lines:
-                buffers += create_buffers(geometry_list=lines, geom_type="line", distance_m=50)
+                buffers += create_buffers(geometry_list=lines, geom_type="line", distance_m=.0001)
             if polys:
-                buffers += create_buffers(geometry_list=polys, geom_type="polygon", distance_m=1)
+                buffers += create_buffers(geometry_list=polys, geom_type="polygon", distance_m=.0001)
 
         if not buffers:
             raise RuntimeError("Buffering produced no output (check geometry and distances).")
@@ -790,6 +790,8 @@ def parent_traffic_impact_payload():
                 "Notes_for_Next_Week": "No Notes",
                 "Drafter": "Unassigned",
                 "Approver": "Unassigned",
+                "Alaska_511_Comm": "NIE",
+                "Log_Status": "No Submissions",
                 "APEX_GUID": st.session_state.get("apex_globalid").strip("{}"),
                 "AWP_Proj_Name": st.session_state.get("awp_proj_name"),
                 "Proj_Name": st.session_state.get("proj_name"),
@@ -969,10 +971,12 @@ def manage_traffic_impact_payloads(package: dict, edit_type=None, which: str = "
                     "Status_COMM":            "NIE",
                     "Description_COMM":       "NIE",
                     "Broadcast_COMM":         "NIE",
+                    "Alaska_511_Comm":        "NIE",
                     "Notes_for_Approver":     "No Notes",
                     "Notes_for_Next_Week":    "No Notes",
                     "Drafter":                "Unassigned",
                     "Approver":               "Unassigned",
+                    "Log_Status":             "No Submissions",
                     "APEX_GUID":              st.session_state.get("apex_guid"),
                     "AWP_Proj_Name":          st.session_state.get("apex_awp_name"),
                     "Proj_Name":              st.session_state.get("apex_proj_name"),

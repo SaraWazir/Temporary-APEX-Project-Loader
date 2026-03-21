@@ -1989,3 +1989,150 @@ class AGOLRouteSegmentFinder:
                 "bop_matches": [],
                 "eop_matches": []
             }
+
+
+
+from typing import Tuple, Optional, List, Dict, Any
+
+def get_routes_within_distance(
+    geometry: Any,
+    routes_url: Optional[str],
+    routes_layer: Optional[int],
+    geometry_type: Optional[str] = None,
+    distance_miles: float = 10.0,
+    fields: Tuple[str, str] = ("Route_ID", "Route_Name"),
+) -> List[Dict[str, Any]]:
+    """
+    Buffer the provided geometry by <distance_miles> miles, then query the given
+    FeatureServer layer for routes that intersect that buffer. Output is ready
+    for geometry_to_folium(feature_type='line').
+
+    Returns a list of dicts:
+      [
+        {"route_id": <id>, "route_name": <name>, "geom": <list or list-of-lists [lon,lat]>},
+        ...
+      ]
+    """
+    if not geometry:
+        return []
+
+    # --- Normalize input to shapely geometry in EPSG:4326 (lon/lat) ---
+    from shapely.geometry import (
+        Point as _Pt, LineString as _Ls, LinearRing as _Lr,
+        Polygon as _Pg, MultiLineString as _MLs
+    )
+    from shapely.ops import unary_union as _uun
+
+    def _to_shapely(g, gtype: Optional[str]):
+        if isinstance(g, dict):
+            if "x" in g and "y" in g:
+                return _Pt(float(g["x"]), float(g["y"]))
+            if "lonlat" in g and isinstance(g["lonlat"], (list, tuple)) and len(g["lonlat"]) == 2:
+                lon, lat = g["lonlat"]
+                return _Pt(float(lon), float(lat))
+            if "rings" in g:
+                rings = g["rings"] or []
+                polys = []
+                for ring in rings:
+                    try:
+                        polys.append(_Pg(_Lr([(float(x), float(y)) for x, y in ring])))
+                    except Exception:
+                        pass
+                if not polys:
+                    return None
+                return polys[0] if len(polys) == 1 else _uun(polys)
+            if "paths" in g:
+                paths = g["paths"] or []
+                lines = []
+                for path in paths:
+                    try:
+                        lines.append(_Ls([(float(x), float(y)) for x, y in path]))
+                    except Exception:
+                        pass
+                if not lines:
+                    return None
+                return lines[0] if len(lines) == 1 else _MLs(lines)
+        # list[[lon,lat], ...] → treat as a line
+        if isinstance(g, (list, tuple)) and g and isinstance(g[0], (list, tuple)) and len(g[0]) == 2:
+            try:
+                return _Ls([(float(x), float(y)) for x, y in g])
+            except Exception:
+                return None
+        return None
+
+    shp_ll = _to_shapely(geometry, geometry_type)
+    if shp_ll is None:
+        return []
+
+    # --- Buffer in meters using Web Mercator (EPSG:3857) ---
+    meters = float(distance_miles) * 1609.344
+    from pyproj import Transformer
+    from shapely.ops import transform as _xf
+
+    to_3857 = Transformer.from_crs(4326, 3857, always_xy=True).transform
+    to_4326 = Transformer.from_crs(3857, 4326, always_xy=True).transform
+
+    shp_3857 = _xf(to_3857, shp_ll)
+    buf_3857 = shp_3857.buffer(meters)
+    if buf_3857.is_empty:
+        return []
+    if hasattr(buf_3857, "geoms") and buf_3857.geom_type in ("MultiPolygon", "GeometryCollection"):
+        polys = [g for g in buf_3857.geoms if g.geom_type == "Polygon"]
+        if polys:
+            from shapely.ops import unary_union
+            buf_3857 = unary_union(polys)
+
+    buf_ll = _xf(to_4326, buf_3857)
+
+    # Convert polygon(s) → list-of-rings (each ring = [[lon,lat], ...])
+    def _rings_from_polygon(p: _Pg):
+        if not isinstance(p, _Pg) or p.exterior is None:
+            return []
+        ring = [[round(float(x), 6), round(float(y), 6)] for (x, y) in p.exterior.coords]
+        return [ring]
+
+    rings = []
+    if buf_ll.geom_type == "Polygon":
+        rings.extend(_rings_from_polygon(buf_ll))
+    elif buf_ll.geom_type == "MultiPolygon":
+        for part in buf_ll.geoms:
+            rings.extend(_rings_from_polygon(part))
+
+    if not rings:
+        return []
+
+    # --- Query the specified FeatureServer layer (via existing helper) ---
+    # We pass url/layer forward when the helper supports them;
+    # fallback to session-based config otherwise.
+    try:
+        # query_routes_within_buffer signature in your env accepts the area,
+        # and typically resolves the service from session state.
+        # If it supports url/layer, pass them through via kwargs.
+        feats = query_routes_within_buffer(
+            rings,
+            fields=fields,
+            include_geometry=True,
+            url=routes_url,
+            layer=routes_layer,
+        ) or []
+    except TypeError:
+        # Older signature without url/layer: rely on session-configured service.
+        feats = query_routes_within_buffer(
+            rings,
+            fields=fields,
+            include_geometry=True,
+        ) or []
+    except Exception:
+        feats = []
+
+    # --- Package for geometry_to_folium ---
+    packaged: List[Dict[str, Any]] = []
+    f_id, f_name = fields
+    for f in feats:
+        attrs = (f.get("attributes") or {})
+        rid = attrs.get(f_id)
+        rname = attrs.get(f_name)
+        geom = f.get("geometry") or []
+        if rid and geom:
+            packaged.append({"route_id": rid, "route_name": rname, "geom": geom})
+    return packaged
