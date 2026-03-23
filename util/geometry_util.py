@@ -2375,245 +2375,169 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
 
 def select_community(container, key_prefix: str = "", is_existing: bool = False, package=None):
     """
-    Behavior:
-    - If is_existing == False → render the Impacted community dropdown FIRST in this function.
-    - If is_existing == True  → do NOT render the dropdown at all.
-    - Starts with no selection (placeholder) and persists across reruns.
-    - Map + fields update whenever the selection changes.
-
-    New requirement:
-    - Do NOT return a package until at least one of the following is provided:
-      * a point
-      * a Community Name
-      * Contact Name, Email, or Phone
+    Updated behavior:
+    - Existing communities immediately show their stored point on the map
+    - Text input changes do NOT reset or re-render the map
+    - Map only responds to clicks (last_clicked subscription only)
     """
     COMMUNITY_ZOOM = 15
     ALASKA_CENTER = [64.5, -152.0]
     ALASKA_ZOOM = 3
     PLACEHOLDER = "— Select a community —"
 
-    # ---------- data prep (no Streamlit UI calls here) ----------
     pkg = dict(package or {})
     fields = dict(pkg.get("fields") or pkg.get("attributes") or {})
     pkg["fields"] = fields
     pkg["attributes"] = fields
-    point = dict(pkg.get("point") or {})
-    pkg["point"] = point
+    pkg["point"] = dict(pkg.get("point") or {})
 
-    version = st.session_state.get("form_version", 0)
-
-    comms_url = (
-        st.session_state.get("communities_url")
-        or st.session_state.get("dcced_communities_url")
-        or None
-    )
-    lyr_idx = int(
-        st.session_state.get("communities_layer")
-        or st.session_state.get("dcced_communities_layer")
-        or 7
-    )
-    id_field = (
-        st.session_state.get("communities_id_field")
-        or st.session_state.get("dcced_communities_id_field")
-        or "DCCED_CommunityId"
-    )
-
-    # Build options (no Streamlit UI here)
-    options = []
-    load_err = None
-    if isinstance(comms_url, str) and comms_url:
-        try:
-            rows = get_multiple_fields(comms_url, lyr_idx, ["OverallName", id_field]) or []
-            for c in rows:
-                name = c.get("OverallName")
-                cid = c.get(id_field) or c.get("DCCED_CommunityId") or c.get("DCCED_CommunityID")
-                if name and cid is not None:
-                    options.append((name, cid))
-        except Exception as e:
-            load_err = f"Communities list not loaded: {e}"
-
-    if not options:
-        fallback = (
-            st.session_state.get("dcced_communities_list")
-            or st.session_state.get("communities_list")
-            or []
-        )
-        for c in fallback:
-            name = c.get("OverallName")
-            cid = c.get(id_field) or c.get("DCCED_CommunityId") or c.get("DCCED_CommunityID")
-            if name and cid is not None:
-                options.append((name, cid))
-
-    names = [n for (n, _cid) in options]
-    name_to_id = dict(options)
-
-    # ==================== LAYOUT: single root container with ordered sub-containers ====================
     root = container if container is not None else st.container()
     with root:
-        top = st.container()   # <-- Dropdown always rendered here, first (when not existing)
-        body = st.container()  # <-- Contact info + Map always rendered here, second
 
-        # ---------- TOP: DROPDOWN (only when not existing) ----------
+        # ========================================================
+        # COMMUNITY SELECTION
+        # ========================================================
         selected_name = None
-        selected_id = None
-        geom = None
 
-        if not is_existing:
-            with top:
-                if not names:
-                    # Disabled dropdown FIRST — no early return so the body still renders
-                    st.selectbox(
-                        "Impacted community",
-                        options=["— no communities available —"],
-                        key=f"{key_prefix}_comms_list",
-                        disabled=True,
-                    )
-                    if load_err:
-                        st.caption(load_err)
-                else:
-                    # Reset to placeholder if the options list itself changes
-                    # (fingerprint kept for future use if you need to detect list changes)
-                    opt_fingerprint = f"{len(names)}::{hash(tuple(names[:10]))}"
-                    select_key = f"{key_prefix}_comms_list"
-                    opts = [PLACEHOLDER] + sorted(names)
-
-                    # RENDERED FIRST in this function
-                    selected_display = st.selectbox(
-                        "Impacted community",
-                        options=opts,
-                        index=0,  # no preselection
-                        key=select_key,
-                        help="Choose the community impacted by the project.",
-                    )
-                    selected_name = None if selected_display == PLACEHOLDER else selected_display
-                    selected_id = name_to_id.get(selected_name) if selected_name else None
-
-                # Geometry fetch (below the dropdown but still in TOP area)
-                if isinstance(comms_url, str) and comms_url and (selected_id is not None):
-                    try:
-                        features = select_record(
-                            url=comms_url,
-                            layer=lyr_idx,
-                            id_field=id_field,
-                            id_value=str(selected_id),
-                            fields=f"OverallName,{id_field}",
-                            return_geometry=True,
-                        ) or []
-                        if features:
-                            feat = features[0] if isinstance(features, list) else {}
-                            geom = (feat.get("geometry") or {}) if isinstance(feat, dict) else None
-                    except Exception as e:
-                        st.caption(f"Failed to retrieve geometry: {e}")
-                        geom = None
-
-                # Persist selection into package/session
-                pkg["selected_community_name"] = (selected_name or "").strip() if selected_name else ""
-                if isinstance(geom, dict) and (selected_name is not None):
-                    lon = geom.get("x")
-                    lat = geom.get("y")
-                    if isinstance(lon, (float, int)) and isinstance(lat, (float, int)):
-                        pkg["point"] = {
-                            "lonlat": [float(lon), float(lat)],
-                            "lng": float(lon),
-                            "lat": float(lat),
-                        }
-
-                # Keep Community_Name stable
-                if (fields.get("Community_Name") in (None, "")) and pkg.get("selected_community_name"):
-                    fields["Community_Name"] = pkg.get("selected_community_name")
-
-                # Keep selected id in session
-                if selected_id is not None:
-                    st.session_state["impact_comm_id"] = selected_id
-
-                # Show any earlier load error BELOW the dropdown (but still in TOP)
-                if load_err and names:
-                    st.caption(load_err)
-
-        # ---------- BODY: CONTACT + MAP (always below the dropdown if it exists) ----------
-        with body:
-            contact_val = st.text_input(
-                "Contact Name",
-                value=str(fields.get("Community_Contact") or "") if fields.get("Community_Contact") is not None else "",
-                key=f"{key_prefix}Community_Contact",
+        if is_existing:
+            selected_name = fields.get("Community_Name")
+        else:
+            comms_url = (
+                st.session_state.get("communities_url")
+                or st.session_state.get("dcced_communities_url")
             )
-            fields["Community_Contact"] = contact_val
+            lyr_idx = int(
+                st.session_state.get("communities_layer")
+                or st.session_state.get("dcced_communities_layer")
+                or 7
+            )
+            id_field = (
+                st.session_state.get("communities_id_field")
+                or st.session_state.get("dcced_communities_id_field")
+                or "DCCED_CommunityId"
+            )
 
-            col_phone, col_email = st.columns(2)
-            with col_phone:
-                phone_val = st.text_input(
-                    "Phone",
-                    value=str(fields.get("Community_Contact_Phone") or "") if fields.get("Community_Contact_Phone") is not None else "",
-                    key=f"{key_prefix}Community_Contact_Phone",
-                )
-                fields["Community_Contact_Phone"] = phone_val
-            with col_email:
-                email_val = st.text_input(
-                    "Email",
-                    value=str(fields.get("Community_Contact_Email") or "") if fields.get("Community_Contact_Email") is not None else "",
-                    key=f"{key_prefix}Community_Contact_Email",
-                )
-                fields["Community_Contact_Email"] = email_val
+            options = []
+            if isinstance(comms_url, str) and comms_url:
+                try:
+                    rows = get_multiple_fields(
+                        comms_url, lyr_idx, ["OverallName", id_field]
+                    ) or []
+                    for r in rows:
+                        if r.get("OverallName") and r.get(id_field) is not None:
+                            options.append((r["OverallName"], r[id_field]))
+                except Exception:
+                    pass
 
-            # Keep Community_Name stable if we have a current selection
-            if (fields.get("Community_Name") in (None, "")) and (pkg.get("selected_community_name") not in (None, "")):
-                fields["Community_Name"] = pkg.get("selected_community_name")
+            names = sorted([n for n, _ in options])
+            name_to_id = dict(options)
 
-            # ------------------------------ MAP ------------------------------
-            lat = (pkg.get("point") or {}).get("lat")
-            lng = (pkg.get("point") or {}).get("lng")
+            sel_key = f"{key_prefix}_community_select"
+            st.markdown("<h6>SELECT COMMUNITY</h6>", unsafe_allow_html=True)
+            selected_display = st.selectbox(
+                "Impacted community",
+                [PLACEHOLDER] + names,
+                key=sel_key,
+            )
+            st.write("")
+
+            if selected_display != PLACEHOLDER:
+                selected_name = selected_display
+                fields["Community_Name"] = selected_name
+                cid = name_to_id.get(selected_name)
+
+                if comms_url and cid is not None:
+                    feats = select_record(
+                        url=comms_url,
+                        layer=lyr_idx,
+                        id_field=id_field,
+                        id_value=str(cid),
+                        fields="*",
+                        return_geometry=True,
+                    ) or []
+
+                    if feats:
+                        geom = feats[0].get("geometry")
+                        if geom and "x" in geom and "y" in geom:
+                            pkg["point"] = {
+                                "lonlat": [geom["x"], geom["y"]],
+                                "lng": geom["x"],
+                                "lat": geom["y"],
+                            }
+
+        # ========================================================
+        # CONTACT INFORMATION
+        # ========================================================
+        
+        st.markdown("<h6>CONTACT INFORMATION</h6>", unsafe_allow_html=True)
+
+        fields["Community_Contact"] = st.text_input(
+            "Contact Name",
+            value=fields.get("Community_Contact") or "",
+            key=f"{key_prefix}Community_Contact",
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            fields["Community_Contact_Phone"] = st.text_input(
+                "Phone",
+                value=fields.get("Community_Contact_Phone") or "",
+                key=f"{key_prefix}Community_Contact_Phone",
+            )
+        with c2:
+            fields["Community_Contact_Email"] = st.text_input(
+                "Email",
+                value=fields.get("Community_Contact_Email") or "",
+                key=f"{key_prefix}Community_Contact_Email",
+            )
+
+        # ========================================================
+        # MAP
+        # ========================================================
+        if selected_name or is_existing:
+            lat = pkg.get("point", {}).get("lat")
+            lng = pkg.get("point", {}).get("lng")
 
             if isinstance(lat, (float, int)) and isinstance(lng, (float, int)):
-                start_location = [float(lat), float(lng)]
+                start_location = [lat, lng]
                 start_zoom = COMMUNITY_ZOOM
             else:
                 start_location = ALASKA_CENTER
                 start_zoom = ALASKA_ZOOM
 
-            m = folium.Map(location=start_location, zoom_start=start_zoom, control_scale=True, height=500)
+            m = folium.Map(
+                location=start_location,
+                zoom_start=start_zoom,
+                control_scale=True,
+            )
 
+            # Existing point
             if isinstance(lat, (float, int)) and isinstance(lng, (float, int)):
-                try:
-                    icon = folium.Icon(color="pink", icon="home", prefix="fa", icon_color="white")
-                    layer = geometry_to_folium({"x": float(lng), "y": float(lat)}, icon=icon)
-                    layer.add_to(m)
-                except Exception:
-                    pass
+                geometry_to_folium(
+                    {"x": lng, "y": lat},
+                    icon=folium.Icon(color="pink", icon="home", prefix="fa"),
+                ).add_to(m)
 
+            st.write("")
+            st.markdown("<h6>COMMUNITY LOCATION</h6>", unsafe_allow_html=True)
             result = st_folium(
                 m,
                 use_container_width=True,
-                key=f"{key_prefix}folium",
-                returned_objects=["last_clicked"],
                 height=500,
+                key=f"{key_prefix}community_map",
+                returned_objects=["last_clicked"],
             )
 
-            last_clicked = (result or {}).get("last_clicked") or {}
-            if isinstance(last_clicked, dict) and "lat" in last_clicked and "lng" in last_clicked:
-                y = last_clicked.get("lat")
-                x = last_clicked.get("lng")
-                if isinstance(x, (float, int)) and isinstance(y, (float, int)):
-                    pkg["point"] = {"lonlat": [float(x), float(y)], "lng": float(x), "lat": float(y)}
+            # Only update on map click
+            if result and result.get("last_clicked"):
+                pt = result["last_clicked"]
+                if "lat" in pt and "lng" in pt:
+                    pkg["point"] = {
+                        "lonlat": [pt["lng"], pt["lat"]],
+                        "lng": pt["lng"],
+                        "lat": pt["lat"],
+                    }
 
-        # ------------------------------ FINALIZE + VALIDATION GATE ------------------------------
-        # Mirror fields onto attributes for compatibility with downstream code
         pkg["fields"] = fields
         pkg["attributes"] = fields
-
-        # Validation: do not return a package until one of the required items exists
-        point = pkg.get("point") or {}
-        has_point = isinstance(point, dict) and isinstance(point.get("lat"), (float, int)) and isinstance(point.get("lng"), (float, int))
-
-        name = (fields.get("Community_Name") or "").strip()
-        contact = (fields.get("Community_Contact") or "").strip()
-        phone = (fields.get("Community_Contact_Phone") or "").strip()
-        email = (fields.get("Community_Contact_Email") or "").strip()
-
-        has_comm = bool(name)
-        has_contact = bool(contact or phone or email)
-
-        if has_point or has_comm or has_contact:
-            return pkg
-
-        # Nothing sufficient yet → do not return a package
-        return None
+        return pkg

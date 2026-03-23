@@ -456,8 +456,7 @@ def run_manager_app():
 
             def _tab_communities():
                 with st.container(border=True):
-                    st.info("Communities Management Tab Under Development")
-                    # manage_impacted_communities()
+                    manage_impacted_communities()
 
             def _tab_deployment():
                 st.info("Deployment Management Tab Under Development")

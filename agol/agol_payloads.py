@@ -1078,66 +1078,98 @@ def manage_traffic_impact_payloads(package: dict, edit_type=None, which: str = "
 # -----------------------------------------------------------------------------
 # Build & deploy payloads to AGOL for add/update/delete (single point layer)
 # -----------------------------------------------------------------------------
-def manage_communities_payloads(package, edit_type = None):
+def manage_communities_payloads(package_out: dict, edit_type: str) -> dict:
     """
-    Build a single-layer payload for Impacted Communities.
+    Build an applyEdits payload for the Impacted Communities layer
+    directly from `package_out` returned by select_community().
 
-    `package` shape (expected):
-    {
-        "objectid": Optional[int],  # present for existing
-        "attributes": { <field1>:..., <field2>:..., <field3>:... },
-        "point": {"lonlat":[x,y], "lng":x, "lat":y},
-    }
-
-    Returns
-    -------
-    {
-      "community": {
-         "adds"    : [ {...feature...} ],
-         "updates" : [ {...feature...} ],
-         "deletes" : [ OBJECTID, ... ]  # (we adapt later for the loader)
-      }
-    }
+    Supported edit_type: 'adds', 'updates', 'deletes'
     """
-    fields = st.session_state.get("impacted_communities_fields") or []
-    guid_field = st.session_state.get("impacted_communities_guid_field", "APEX_GUID")
+
+    if not isinstance(package_out, dict):
+        raise ValueError("package_out must be a dict")
+
+    # --------------------------------------------------
+    # Extract required inputs
+    # --------------------------------------------------
+    attrs_in = dict(package_out.get("attributes") or {})
+    point = package_out.get("point") or {}
+
     apex_guid = st.session_state.get("apex_guid")
+    if not apex_guid:
+        raise ValueError("Missing apex_guid in session_state")
 
-    attrs = dict(package.get("attributes") or {})
-    # Ensure project GUID attribute is present on adds
-    if edit_type == "adds" and guid_field and apex_guid is not None:
-        attrs[guid_field] = apex_guid
+    # --------------------------------------------------
+    # Geometry (POINT) — STRICT lon/lat handling
+    # --------------------------------------------------
+    lng = point.get("lng")
+    lat = point.get("lat")
 
-    # Geometry (keep exact x=lng, y=lat)
-    pt = package.get("point") or {}
-    x = pt.get("lng")
-    y = pt.get("lat")
-    geom = None
-    if (x is not None) and (y is not None):
-        geom = {"x": x, "y": y}
+    if lng is None or lat is None:
+        raise ValueError("Community payload missing valid point geometry")
 
-    feature = {"attributes": attrs}
-    if geom is not None:
-        feature["geometry"] = geom
+    geometry = {
+        "x": float(lng),
+        "y": float(lat),
+        "spatialReference": {"wkid": 4326},
+    }
 
-    payload = {"community": {}}
+    # --------------------------------------------------
+    # Attributes — explicit field mapping
+    # --------------------------------------------------
+    attributes = {
+        "parentglobalid": apex_guid,
+        "Community_Name": attrs_in.get("Community_Name"),
+        "Community_Contact": attrs_in.get("Community_Contact"),
+        "Community_Contact_Email": attrs_in.get("Community_Contact_Email"),
+        "Community_Contact_Phone": attrs_in.get("Community_Contact_Phone"),
+    }
 
+    # --------------------------------------------------
+    # ADDS
+    # --------------------------------------------------
     if edit_type == "adds":
-        payload["community"]["adds"] = [feature]
-    elif edit_type == "updates":
-        # Require OBJECTID for updates
-        objectid = package.get("objectid") or attrs.get("OBJECTID") or attrs.get("objectId")
-        if objectid is not None and "OBJECTID" not in attrs:
-            # Normalize OBJECTID casing the same way your loader expects
-            attrs["OBJECTID"] = objectid
-        payload["community"]["updates"] = [feature]
-    elif edit_type == "deletes":
-        objectid = package.get("objectid") or attrs.get("OBJECTID") or attrs.get("objectId")
-        payload["community"]["deletes"] = [objectid] if objectid is not None else []
-    else:
-        raise ValueError(f"Unsupported edit_type: {edit_type}")
+        return {
+            "adds": [
+                {
+                    "attributes": attributes,
+                    "geometry": geometry,
+                }
+            ]
+        }
 
-    return payload
+    # --------------------------------------------------
+    # UPDATES
+    # --------------------------------------------------
+    if edit_type == "updates":
+        objectid = package_out.get("objectid")
+        if objectid is None:
+            raise ValueError("UPDATE requires OBJECTID")
+
+        attributes["OBJECTID"] = objectid
+
+        return {
+            "updates": [
+                {
+                    "attributes": attributes,
+                    "geometry": geometry,
+                }
+            ]
+        }
+
+    # --------------------------------------------------
+    # DELETES
+    # --------------------------------------------------
+    if edit_type == "deletes":
+        objectid = package_out.get("objectid")
+        if objectid is None:
+            raise ValueError("DELETE requires OBJECTID")
+
+        return {
+            "deletes": [objectid]
+        }
+
+    raise ValueError(f"Unsupported edit_type '{edit_type}'")
 
 
 

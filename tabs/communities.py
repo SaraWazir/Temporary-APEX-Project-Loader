@@ -7,19 +7,16 @@ from typing import Optional, Dict, Any, List
 # Mapping libs
 import folium
 from streamlit_folium import st_folium
-
 # Your helpers
 from util.map_util import (
     geometry_to_folium,
     set_bounds_point
 )
 from util.geometry_util import select_community  # <-- uses the updated function
-
 # AGOL helpers you already have
 from agol.agol_util import select_record
 from agol.agol_util import AGOLDataLoader  # applyEdits wrapper (add/update/delete)
 from agol.agol_payloads import manage_communities_payloads
-
 
 # -----------------------------------------------------------------------------
 # Small utility: stable fingerprint for change detection (kept for future use)
@@ -32,7 +29,6 @@ def _fingerprint(obj) -> str:
     except Exception:
         return f"{type(obj).__name__}:{str(obj)[:200]}"
 
-
 # -----------------------------------------------------------------------------
 # Fetch existing Impacted Communities for the current project
 # -----------------------------------------------------------------------------
@@ -40,7 +36,6 @@ def fetch_impacted_communities(force: bool = False) -> List[Dict[str, Any]]:
     apex_guid = st.session_state.get("apex_guid")
     apex_url = st.session_state.get("apex_url")
     lyr_idx = st.session_state.get("impact_comms_layer")
-
     # Canonical fields from the feature layer
     fields = (
         st.session_state.get("impacted_communities_fields")
@@ -81,13 +76,11 @@ def fetch_impacted_communities(force: bool = False) -> List[Dict[str, Any]]:
     for feat in features:
         attrs = feat.get("attributes") or {}
         geom = feat.get("geometry") or {}
-
         # STRICT: Only carry the four canonical fields into attributes for UI/state
         picked_attributes = {
             f: attrs.get(f)
             for f in ["Community_Name", "Community_Contact", "Community_Contact_Email", "Community_Contact_Phone"]
         }
-
         rec = {
             "objectid": attrs.get("objectid"),
             "globalid": attrs.get("globalid"),
@@ -111,75 +104,49 @@ def fetch_impacted_communities(force: bool = False) -> List[Dict[str, Any]]:
     st.session_state["_communities_loaded_for_guid"] = apex_guid
     return records
 
-
 # -----------------------------------------------------------------------------
-# DEPLOY (payload builder removed — expects fully built payloads)
+# DEPLOY (expects a ready applyEdits payload; no internal payload building)
 # -----------------------------------------------------------------------------
 def _deploy_to_agol_communities(
-    payloads: Dict[str, Any],  # <--- you provide prebuilt payloads here
+    payload: Dict[str, Any],
     edit_type: str,
     *,
     progress_placeholder: Optional[st.delta_generator.DeltaGenerator] = None,
 ) -> Dict[str, Any]:
-    """
-    Submit community point edits to AGOL.
-    This function NO LONGER builds payloads — they must be supplied in `payloads`.
-
-    Expected structure of `payloads`:
-    {
-      "adds": [...],
-      "updates": [...],
-      "deletes": [...]
-    }
-    """
-    base_url = st.session_state.get("impacted_communities_url")
-    lyr_idx = st.session_state.get("impacted_communities_layer")
+    base_url = st.session_state.get("apex_url")
+    lyr_idx = st.session_state.get("impact_comms_layer")
     if base_url is None or lyr_idx is None:
-        return {"community": {"success": False, "message": "Layer not configured"}}
+        st.error("AGOL layer is not configured")
+        return {"community": {"success": False}}
 
     loader = AGOLDataLoader(base_url, lyr_idx)
 
-    def _progress_init(initial_frac: float, text: str):
+    def _progress(frac, text):
         if progress_placeholder is not None:
-            return progress_placeholder.progress(initial_frac, text=text)
-        return st.progress(initial_frac, text=text)
+            progress_placeholder.progress(frac, text=text)
+        else:
+            st.progress(frac, text=text)
 
-    # Adapt to loader format
+    _progress(0.0, f"Submitting {edit_type} to AGOL…")
+
+    # Submit exactly what the payload builder produced
     if edit_type == "adds":
-        adapted = {"adds": payloads.get("adds", [])}
+        res = loader.add_features(payload)
     elif edit_type == "updates":
-        upd_items = []
-        for rec in payloads.get("updates", []) or []:
-            rec = dict(rec)
-            attrs = dict(rec.get("attributes", {}))
-            if "OBJECTID" not in attrs and "objectId" in attrs:
-                attrs["OBJECTID"] = attrs.pop("objectId")
-            rec["attributes"] = attrs
-            upd_items.append(rec)
-        adapted = {"updates": upd_items}
+        # Normalize OBJECTID just in case (does not alter UI/behavior)
+        if isinstance(payload, dict) and "updates" in payload:
+            for rec in payload.get("updates") or []:
+                attrs = rec.get("attributes", {})
+                if "OBJECTID" not in attrs and "objectId" in attrs:
+                    attrs["OBJECTID"] = attrs.pop("objectId")
+        res = loader.update_features(payload)
     elif edit_type == "deletes":
-        ids = payloads.get("deletes") or []
-        if not isinstance(ids, (list, tuple)):
-            ids = [ids]
-        adapted = {
-            "updates": [{"attributes": {"OBJECTID": oid}} for oid in ids if oid not in (None, "")]
-        }
+        res = loader.delete_features(payload)
     else:
-        return {"community": {"success": False, "message": f"Unknown edit_type {edit_type}"}}
+        st.error(f"Unknown edit_type: {edit_type}")
+        return {"community": {"success": False, "message": f"Unknown {edit_type}"}}
 
-    step_name = "Impacted Communities"
-    progress = _progress_init(0, text=f"Starting {edit_type}...")
-
-    if edit_type == "adds":
-        res = loader.add_features(adapted)
-    elif edit_type == "updates":
-        res = loader.update_features(adapted)
-    else:
-        res = loader.delete_features(adapted)
-
-    progress.progress(1.0, text=f"{step_name}: {'OK' if res.get('success') else 'FAILED'}")
-    return {"community": res}
-
+    _progress(1.0, "Done")
 
 # -----------------------------------------------------------------------------
 # UI: Manage Impacted Communities (tabs)
@@ -187,7 +154,6 @@ def _deploy_to_agol_communities(
 def manage_impacted_communities():
     curr_guid = st.session_state.get("guid")
     prev_guid = st.session_state.get("_ic_guid")
-
     if curr_guid is not None and prev_guid != curr_guid:
         st.session_state.pop("communities", None)
         st.session_state.pop("community_next_id", None)
@@ -239,14 +205,14 @@ def manage_impacted_communities():
             st.rerun()
 
     st.caption(
-        "Review all communities affected by this project and perform management actions, including adding new communities, updating existing records, or deleting entries that are no longer applicable."
+        "Review all communities affected by this project and perform management actions, including adding new communities, "
+        "updating existing records, or deleting entries that are no longer applicable."
     )
     st.write("")
 
     # ----- LOAD EXISTING -----
     pulled_records = fetch_impacted_communities(force=False)
     existing_records = bool(pulled_records)
-
     if pulled_records and not st.session_state["communities"]:
         st.session_state["communities"] = [_community_from_record(r) for r in pulled_records]
 
@@ -259,7 +225,6 @@ def manage_impacted_communities():
             "attributes": dict(ev.get("field_values") or {}),
             "point": ev.get("selected_point"),
         }
-
         # Provide communities dataset context (explicitly pass to the picker)
         base["communities_list"] = (
             st.session_state.get("communities_list")
@@ -281,13 +246,11 @@ def manage_impacted_communities():
             or st.session_state.get("dcced_communities_id_field")
             or "DCCED_CommunityId"
         )
-
         # Persist any prior dropdown selection for the tab (so it restores)
         if ev.get("selected_community_id") is not None:
             base["selected_community_id"] = ev.get("selected_community_id")
         if ev.get("selected_community_name") is not None:
             base["selected_community_name"] = ev.get("selected_community_name")
-
         return base
 
     def _clear_tab_selection(key_prefix: str, ev: dict):
@@ -296,7 +259,6 @@ def manage_impacted_communities():
         # IMPORTANT: Do not touch ev["label"]; tab titles remain unchanged until re-pull
         ev["objectid"] = None
         ev["globalid"] = None
-
         # clear any transient map/input state keys if present
         st.session_state.pop(f"{key_prefix}folium", None)
         st.session_state.pop(f"{key_prefix}Community_Contact", None)
@@ -318,7 +280,6 @@ def manage_impacted_communities():
                 is_existing=is_existing,
                 package=package_in,  # explicitly pass enriched package
             )
-            st.session_state['debug'] = package_out
         except TypeError:
             # Fallback signatures (kept for compatibility with older helper versions)
             try:
@@ -327,7 +288,6 @@ def manage_impacted_communities():
                     key_prefix=key_prefix,
                     is_existing=is_existing,
                 )
-                st.session_state['debug'] = package_out
             except TypeError:
                 package_out = package_in  # last resort: keep the inbound package
 
@@ -336,22 +296,20 @@ def manage_impacted_communities():
             # 1) point (direct replace if present)
             if package_out.get("point"):
                 ev["selected_point"] = package_out["point"]
-
             # 2) fields/attributes: accept fields from picker as authoritative
             out_fields = package_out.get("fields") or package_out.get("attributes") or {}
             if isinstance(out_fields, dict):
                 ev["field_values"] = dict(out_fields)
-
             # 3) remember dropdown selection for this tab so it's restored on next render
             if "selected_community_id" in package_out:
                 ev["selected_community_id"] = package_out["selected_community_id"]
             if "selected_community_name" in package_out:
                 ev["selected_community_name"] = package_out["selected_community_name"]
 
-            # NOTE: DO NOT sync label from Community_Name here.
-            # Tabs are only updated after submit + re-pull.
+        # NOTE: DO NOT sync label from Community_Name here.
+        # Tabs are only updated after submit + re-pull.
 
-        # Build the package used for add/update/delete
+        # Build the package used for validation (UI behavior unchanged)
         package_final = {
             "objectid": ev.get("objectid"),
             "attributes": dict(ev.get("field_values") or {}),
@@ -362,10 +320,14 @@ def manage_impacted_communities():
         progress_placeholder = st.empty()
 
         if is_existing:
-            # UPDATE / DELETE
+            # ===================== UPDATE =====================
             with btn_col1:
-                if st.button("UPDATE", use_container_width=True, type="primary",
-                             key=f"{key_prefix}btn_update"):
+                if st.button(
+                    "UPDATE",
+                    use_container_width=True,
+                    type="primary",
+                    key=f"{key_prefix}btn_update",
+                ):
                     missing_contact = not (package_final.get("attributes") or {}).get("Community_Contact")
                     missing_phone = not (package_final.get("attributes") or {}).get("Community_Contact_Phone")
                     missing_email = not (package_final.get("attributes") or {}).get("Community_Contact_Email")
@@ -373,27 +335,41 @@ def manage_impacted_communities():
                     if missing_contact or missing_phone or missing_email or missing_point:
                         st.warning("Provide Contact, Phone, Email, and a map location before updating.")
                     else:
-                        payloads = manage_communities_payloads(package_final, "updates")
+                        # ✅ build payload directly from package_out (not package_final)
+                        payload = manage_communities_payloads(package_out, "updates")
                         _ = _deploy_to_agol_communities(
-                            payloads, edit_type="updates",
-                            progress_placeholder=progress_placeholder
+                            payload,
+                            edit_type="updates",
+                            progress_placeholder=progress_placeholder,
                         )
+                        # Refresh from AGOL
+                        pulled = fetch_impacted_communities(force=True)
+                        st.session_state["communities"] = []
+                        st.session_state["community_next_id"] = 1
+                        for rec in (pulled or []):
+                            st.session_state["communities"].append(_community_from_record(rec))
                         st.rerun()
+
+            # ===================== DELETE =====================
             with btn_col2:
-                if st.button("DELETE", use_container_width=True,
-                             key=f"{key_prefix}btn_delete"):
+                if st.button(
+                    "DELETE",
+                    use_container_width=True,
+                    key=f"{key_prefix}btn_delete",
+                ):
                     if not package_final.get("objectid"):
                         st.warning("Missing OBJECTID for delete.")
                     else:
-                        payloads = manage_communities_payloads(package_final, "deletes")
+                        # ✅ build payload directly from package_out (not package_final)
+                        payload = manage_communities_payloads(package_out, "deletes")
                         delete_result = _deploy_to_agol_communities(
-                            payloads, edit_type="deletes",
-                            progress_placeholder=progress_placeholder
+                            payload,
+                            edit_type="deletes",
+                            progress_placeholder=progress_placeholder,
                         )
-                        ok = delete_result.get("community", {}).get("success", False)
-                        if not ok:
+                        if not delete_result.get("community", {}).get("success", False):
                             st.warning("AGOL delete may have failed. Check logs.")
-
+                        # Refresh from AGOL
                         pulled = fetch_impacted_communities(force=True)
                         st.session_state["communities"] = []
                         st.session_state["community_next_id"] = 1
@@ -401,10 +377,14 @@ def manage_impacted_communities():
                             st.session_state["communities"].append(_community_from_record(rec))
                         st.rerun()
         else:
-            # ADD / CLEAR
+            # ===================== ADD =====================
             with btn_col1:
-                if st.button("ADD", use_container_width=True, type="primary",
-                             key=f"{key_prefix}btn_add"):
+                if st.button(
+                    "ADD",
+                    use_container_width=True,
+                    type="primary",
+                    key=f"{key_prefix}btn_add",
+                ):
                     missing_contact = not (package_final.get("attributes") or {}).get("Community_Contact")
                     missing_phone = not (package_final.get("attributes") or {}).get("Community_Contact_Phone")
                     missing_email = not (package_final.get("attributes") or {}).get("Community_Contact_Email")
@@ -412,24 +392,30 @@ def manage_impacted_communities():
                     if missing_contact or missing_phone or missing_email or missing_point:
                         st.warning("Provide Contact, Phone, Email, and a map location before adding.")
                     else:
-                        payloads = manage_communities_payloads(package_final, "adds")
+                        # ✅ build payload directly from package_out (not package_final)
+                        payload = manage_communities_payloads(package_out, "adds")
                         add_result = _deploy_to_agol_communities(
-                            payloads, edit_type="adds",
-                            progress_placeholder=progress_placeholder
+                            payload,
+                            edit_type="adds",
+                            progress_placeholder=progress_placeholder,
                         )
-                        ok = add_result.get("community", {}).get("success", False)
-                        if not ok:
+                        if not add_result.get("community", {}).get("success", False):
                             st.warning("AGOL add may have failed. Check logs.")
-
+                        # Refresh from AGOL
                         pulled = fetch_impacted_communities(force=True)
                         st.session_state["communities"] = []
                         st.session_state["community_next_id"] = 1
                         for rec in (pulled or []):
                             st.session_state["communities"].append(_community_from_record(rec))
                         st.rerun()
+
+            # ===================== CLEAR =====================
             with btn_col2:
-                if st.button("CLEAR", use_container_width=True,
-                             key=f"{key_prefix}btn_clear"):
+                if st.button(
+                    "CLEAR",
+                    use_container_width=True,
+                    key=f"{key_prefix}btn_clear",
+                ):
                     _clear_tab_selection(key_prefix, ev)
                     st.rerun()
 
@@ -441,7 +427,6 @@ def manage_impacted_communities():
         (ev.get("label") or "New Community")
         for i, ev in enumerate(communities)
     ]
-
     if communities:
         tabs = st.tabs(tab_labels)
         for tab, ev in zip(tabs, communities):
