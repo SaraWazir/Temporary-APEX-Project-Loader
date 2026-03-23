@@ -775,7 +775,7 @@ def parent_traffic_impact_payload():
         # Build a single valid feature combining attributes + geometry
         feature = {
             "attributes": {
-                "Event_Name": "Unnamed Event",
+                "Event_Name": "Blank Event",
                 "DOT_PF_Proj_Phone_COMM": "NIE",
                 "Agency_Name_COMM": "NIE",
                 "Agency_Phone_COMM": "NIE",

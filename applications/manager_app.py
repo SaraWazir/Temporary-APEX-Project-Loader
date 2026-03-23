@@ -23,10 +23,12 @@ def run_manager_app():
         guid = st.session_state.get("guid")
         url = st.session_state.get("apex_url")
         layer = st.session_state.get("projects_layer")
+
         if not guid or not url or layer is None:
             st.session_state["project_record"] = None
             st.session_state["objectid"] = None
             return
+
         try:
             rec = select_record(
                 url,
@@ -117,6 +119,7 @@ def run_manager_app():
         """
         if not rec_list or not isinstance(rec_list, list):
             raise ValueError("Empty APEX response")
+
         feature = rec_list[0]
         attrs = feature.get("attributes", {})
         st.session_state["apex_guid"] = attrs.get("globalid")
@@ -308,6 +311,7 @@ def run_manager_app():
     label_to_gid = {}
     labels_with_placeholder = []
     placeholder_label = "— Select a project —"
+
     projects_url = st.session_state.get("apex_url")
     projects_layer = st.session_state.get('projects_layer')
 
@@ -320,6 +324,7 @@ def run_manager_app():
         except Exception as e:
             st.error(f"Failed to load project list: {e}")
             projects = []
+
         label_to_gid = {
             p.get("Proj_Name"): p.get("globalid")
             for p in projects
@@ -452,7 +457,7 @@ def run_manager_app():
             def _tab_communities():
                 with st.container(border=True):
                     st.info("Communities Management Tab Under Development")
-                # manage_impacted_communities()
+                    # manage_impacted_communities()
 
             def _tab_deployment():
                 st.info("Deployment Management Tab Under Development")
@@ -470,6 +475,7 @@ def run_manager_app():
             if func is not None:
                 func()
                 st.stop()
-        else:
-            st.info(f"Select a tab to view and manage project information")
-            st.stop()
+            else:
+                # ⬇️ Updated language per request
+                st.info("Please choose a category to access the project management options.")
+                st.stop()

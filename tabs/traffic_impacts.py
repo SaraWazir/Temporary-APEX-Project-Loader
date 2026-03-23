@@ -2,14 +2,12 @@ import streamlit as st
 import json
 import hashlib
 from typing import Optional
-
 from util.geometry_util import (
     select_route_and_points,  # injected selector; returns updated package (or None)
     geometry_to_folium,
 )
 from util.geospatial_util import create_buffers
 from agol.agol_util import select_record
-
 # NEW imports for deployment helper
 from agol.agol_util import AGOLDataLoader  # AGOL applyEdits wrapper (add/update/delete)
 from agol.agol_payloads import manage_traffic_impact_payloads  # builds the 4 payloads from the package
@@ -36,6 +34,7 @@ def fetch_traffic_impacts(force: bool = False):
     and populate:
       - st.session_state["existing_tie_records"] : list[dict] (normalized records)
       - st.session_state["traffic_impacts_list"] : list[dict] (same shape used across UI)
+
     Returns
     -------
     list[dict]
@@ -111,10 +110,18 @@ def fetch_traffic_impacts(force: bool = False):
     for feat in parent_features:
         attrs = feat.get("attributes") or {}
         geom = feat.get('geometry') or {}
-
         ti_guid = attrs.get("globalid")
         ti_objectid = attrs.get("objectid")
-        ti_event_name = attrs.get("Event_Name")
+
+        # --- NAME NORMALIZATION (requested):
+        # If the existing Traffic Impact Event has Event_Name == "Blank Traffic Impact Event",
+        # rewrite it to "New Event" before passing forward.
+        raw_name = attrs.get("Event_Name")
+        ti_event_name = (
+            "New Event" if isinstance(raw_name, str) and raw_name.strip() == "Blank Event"
+            else raw_name
+        )
+
         ti_route_id = attrs.get("Route_ID")
         ti_route_name = attrs.get("Route_Name")
         ti_impact_area = geom.get("rings")  # polygon rings (lon,lat)
@@ -237,7 +244,6 @@ def _deploy_to_agol(
         "start": AGOLDataLoader(base_url, lyr_start),
         "end": AGOLDataLoader(base_url, lyr_end),
     }
-
     step_names = {
         "parent": "Parent polygon",
         "route": "Impacted route",
@@ -255,7 +261,6 @@ def _deploy_to_agol(
         """Return (mode, adapted_payload) for AGOLDataLoader."""
         if et == "adds":
             return "adds", {"adds": section.get("adds", [])}
-
         if et == "updates":
             upd_items = []
             for rec in section.get("updates", []) or []:
@@ -267,14 +272,12 @@ def _deploy_to_agol(
                 rec["attributes"] = attrs
                 upd_items.append(rec)
             return "updates", {"updates": upd_items}
-
         if et == "deletes":
             ids = section.get("deletes") or []
             if not isinstance(ids, (list, tuple)):
                 ids = [ids]
             updates = [{"attributes": {"OBJECTID": oid}} for oid in ids if oid not in (None, "")]
             return "deletes", {"updates": updates}
-
         raise ValueError(f"Unsupported edit_type: {et}")
 
     def _extract_new_globalid(result: dict) -> Optional[str]:
@@ -306,8 +309,8 @@ def _deploy_to_agol(
         st.session_state["traffic_impact_globalid"] = None  # clear stale
         parent_only = manage_traffic_impact_payloads(package, edit_type="adds", which="parent")
         parent_section = parent_only.get("parent", {})
-        progress.progress(0 / total, text=f"{step_names['parent']}: preparing...")
 
+        progress.progress(0 / total, text=f"{step_names['parent']}: preparing...")
         mode, adapted = _adapt_for_loader("adds", parent_section)
         res_parent = loaders["parent"].add_features(adapted)
         results["parent"] = res_parent
@@ -341,7 +344,6 @@ def _deploy_to_agol(
     order = (["parent", "route", "start", "end"] if edit_type in ("adds", "updates")
              else ["start", "end", "route", "parent"])
     payloads = manage_traffic_impact_payloads(package, edit_type=edit_type, which="all")
-
     progress = _progress_init(0, text=f"Starting {edit_type}...")
     total = len(order)
 
@@ -449,9 +451,8 @@ def manage_traffic_impacts():
     # Impact buffer (cached per project geometry + params)
     # ------------------------------------------------------------
     proj_area = st.session_state.get("apex_proj_area")
-    buffer_params = ("polygon", 50)
+    buffer_params = ("polygon", 2000)
     impact_sig = _fingerprint([proj_area, buffer_params])
-
     if st.session_state.get("_impact_area_sig") != impact_sig:
         impact_area = create_buffers(proj_area, buffer_params[0], buffer_params[1])
         if not impact_area:
@@ -460,7 +461,6 @@ def manage_traffic_impacts():
         st.session_state["_impact_area_sig"] = impact_sig
         for ev in st.session_state.get("tie_events", []):
             ev["selected_impact_area"] = impact_area
-
     impact_area = st.session_state.get("impact_area")
 
     # ------------------------------------------------------------
@@ -540,9 +540,9 @@ def manage_traffic_impacts():
 
     # ------------------------------------------------------------
     # Event renderer — selector + per-event buttons (reused)
-    #  - SECOND CONTAINER wraps ONLY the selector function.
-    #  - Buttons come immediately after, outside that container.
-    #  - Progress bar is created lazily (only on click) so there's no idle space.
+    # - SECOND CONTAINER wraps ONLY the selector function.
+    # - Buttons come immediately after, outside that container.
+    # - Progress bar is created lazily (only on click) so there's no idle space.
     # ------------------------------------------------------------
     def _render_event_panel(ev, impact_area_current):
         if ev["selected_impact_area"] is None:
@@ -550,13 +550,29 @@ def manage_traffic_impacts():
 
         key_prefix = f"ev{ev['event_id']}_"
         package_in = _resolve_package_for_event(ev)
-
         is_existing = bool(ev.get("initialized_from_record"))
+
         if not is_existing:
             impacts = st.session_state.get("traffic_impacts_list") or []
             is_existence_alias = any(package_in is p for p in impacts)  # back-compat
             if is_existence_alias:
                 is_existing = True
+
+        # --- NEW: For existing events, buffer the area by 800 m for display/query,
+        # but do NOT mutate the stored area in package_in.
+        package_for_selector = package_in
+        if is_existing:
+            try:
+                pkg_area = (package_in or {}).get("area")
+                if pkg_area:
+                    buffered_area = create_buffers(pkg_area, distance_meters=2000)
+                    if buffered_area:
+                        # shallow copy so we don't change the incoming dict
+                        package_for_selector = dict(package_in)
+                        package_for_selector["area"] = buffered_area
+            except Exception:
+                # On any failure, fall back to the unbuffered package
+                package_for_selector = package_in
 
         # --- Second container: ONLY wrap the selector function ---
         selector_container = st.container(border=False)
@@ -566,7 +582,7 @@ def manage_traffic_impacts():
                     selector_container,
                     key_prefix=key_prefix,
                     is_existing=is_existing,
-                    package=package_in,
+                    package=package_for_selector,  # <-- use buffered area when existing
                 )
             except TypeError:
                 package_out = select_route_and_points(selector_container, key_prefix=key_prefix)
@@ -648,7 +664,6 @@ def manage_traffic_impacts():
                                 _event_from_record(rec, impact_area_default=impact_area)
                             )
                         st.rerun()
-
         else:
             # -------- NEW: LOAD / CLEAR --------
             with btn_col1:
@@ -701,6 +716,7 @@ def manage_traffic_impacts():
 
         # Keep a stable, index-based selector so switching does not reconstruct all maps
         st.session_state.setdefault("ti_event_selector", labels[0])
+
         # If label list changed (e.g., after update/delete/add), clamp value
         if st.session_state["ti_event_selector"] not in labels:
             st.session_state["ti_event_selector"] = labels[0]

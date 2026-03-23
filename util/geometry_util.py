@@ -1567,7 +1567,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     - The map always calls `fit_bounds(bounds)` to the current project/area on render.
     - Segmented-control changes do not change which area we fit to; they only change click behavior.
     """
-
     # --- Headings (contextual) ---
     if not is_existing:
         st.markdown("###### CREATE TRAFFIC IMPACT EVENT", unsafe_allow_html=True)
@@ -1635,7 +1634,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     def _haversine(lon1, lat1, lon2, lat2):
         R = 6371000.0
         import math as _m
-
         phi1, phi2 = _m.radians(lat1), _m.radians(lat2)
         dphi = _m.radians(lat2 - lat1)
         dlmb = _m.radians(lon2 - lon1)
@@ -1719,6 +1717,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         # Capture once (do not overwrite non-None values).
         p_oid = _norm_parent_oid(package)
         r_oid, s_oid, e_oid = _norm_child_oids(package)
+
         if p_oid is not None and st.session_state.get(oid_parent_key) is None:
             st.session_state[oid_parent_key] = p_oid
         if r_oid is not None and st.session_state.get(oid_route_key) is None:
@@ -1743,6 +1742,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     # ------------------------------------------------------
     package_area = (package or {}).get("area") if isinstance(package, dict) else None
     buffered_area = st.session_state.get("impact_area")  # from Manage
+
     fit_geom_key = f"{key_prefix}fit_bounds_geom"
     parent_fit_geom = st.session_state.get(fit_geom_key)
 
@@ -1915,6 +1915,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                         "route_geom": st.session_state[sel_geom_key],
                     }
                 )
+
                 if isinstance(package, dict):
                     package["route_id"] = st.session_state[ti_key]["route_id"]
                     package["route_name"] = st.session_state[ti_key]["route_name"]
@@ -1940,7 +1941,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                     st.session_state[map_key]["last_clicked"] = None
                 except Exception:
                     pass
-
                 st.rerun()
             else:
                 st.session_state[tol_key] = True
@@ -1989,24 +1989,29 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
             geom = r.get("geometry") or []
             if not rid or not geom:
                 continue
+
             feature = {
                 "type": "Feature",
                 "geometry": {"type": "LineString", "coordinates": geom},
                 "properties": {"Route_ID": rid, "Route_Name": attrs.get("Route_Name")},
             }
-            base_color = "#e53935" if rid == selected_id else "#6c757d"
-            base_weight = 6 if rid == selected_id else 3
-            base_opacity = 1.0 if rid == selected_id else 0.75
+
+            base_color   = "#e53935" if rid == selected_id else "#6c757d"
+            base_weight  = 6 if rid == selected_id else 3
+            # ↓ make non-selected gray routes “transparent” but still clickable
+            base_opacity = 1.0 if rid == selected_id else 0.20
 
             def _style_factory(color, weight, opacity):
                 return {"color": color, "weight": weight, "opacity": opacity}
 
+            # keep strong red highlight on hover so gray routes light up
             highlight = lambda f: {"color": "#e53935", "weight": 6, "opacity": 1.0}
+
             folium.GeoJson(
                 data=feature,
                 style_function=lambda f, c=base_color, w=base_weight, o=base_opacity: _style_factory(c, w, o),
                 highlight_function=highlight,
-                tooltip=folium.Tooltip(f"Route ID: {rid}\nRoute Name: {attrs.get('Route_Name')}"),
+                tooltip=folium.Tooltip(f"{rid}\n: {attrs.get('Route_Name')}"),
                 name=f"route_{rid}",
             ).add_to(m)
     else:
@@ -2017,24 +2022,123 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                 weight=6,
                 opacity=1.0,
                 tooltip=(
-                    f"Route ID: {fmt_string(selected_id)}\n"
-                    f"Route Name: {fmt_string(st.session_state.get(sel_name_key, '') or id_to_name.get(selected_id, ''))}"
+                    f"{fmt_string(selected_id)}\n"
+                    f": {fmt_string(st.session_state.get(sel_name_key, '') or id_to_name.get(selected_id, ''))}"
                 ),
                 feature_type="line",
             ).add_to(m)
 
-    # Project Geometry (visual reference)
-    project_geom_display = st.session_state.get("project_geometry")
-    project_geom_type = (st.session_state.get("project_geometry_type") or "").lower()
-    if project_geom_display and project_geom_type:
-        if project_geom_type in ("point",):
-            geometry_to_folium(project_geom_display, feature_type="point", icon=folium.Icon(color="blue")).add_to(m)
-        elif project_geom_type in ("line", "linestring"):
-            geometry_to_folium(project_geom_display, feature_type="line", weight=4).add_to(m)
-        elif project_geom_type in ("polygon",):
-            geometry_to_folium(project_geom_display, feature_type="polygon", weight=4, fill=True).add_to(m)
+    # ─────────────────────────────────────────────────────────────
+    # Project Geometry (APEX) — ALWAYS render if available
+    # Uses apex_geom/type created in manager_app; falls back to previous keys.
+    # ─────────────────────────────────────────────────────────────
+    try:
+        apex_geom_ctx = st.session_state.get("apex_geom") or {}
+        geom_type_raw = (
+            apex_geom_ctx.get("type")
+            or st.session_state.get("geom_type")
+            or st.session_state.get("apex_proj_type")
+            or ""
+        )
+        geom_type = str(geom_type_raw).strip().lower()
+        apex_parts = apex_geom_ctx.get("geoms") or []
+        proj_area_fallback = st.session_state.get("apex_proj_area")  # rings list if available
+
+        def _is_pair(x):
+            return isinstance(x, (list, tuple)) and len(x) == 2 and all(isinstance(v, (int, float)) for v in x)
+
+        if geom_type in ("route", "line", "linestring"):
+            if apex_parts:
+                # multi-part lines OK via {"paths": [...]}
+                geometry_to_folium(
+                    {"paths": apex_parts},
+                    color="#2e7d32",
+                    weight=4,
+                    opacity=0.85,
+                    feature_type="line",
+                ).add_to(m)
+        elif geom_type in ("boundary", "polygon", "area"):
+            rings = apex_parts if apex_parts else (proj_area_fallback or [])
+            if rings:
+                geometry_to_folium(
+                    {"rings": rings},
+                    color="#2e7d32",
+                    weight=3,
+                    fill=True,
+                    fill_opacity=0.20,
+                    feature_type="polygon",
+                ).add_to(m)
+        elif geom_type in ("site", "point"):
+            pts = [p for p in apex_parts if _is_pair(p)]
+            if pts:
+                geometry_to_folium(
+                    pts,
+                    feature_type="point",
+                    icon=folium.Icon(color="blue"),
+                ).add_to(m)
         else:
-            geometry_to_folium(project_geom_display, feature_type="line", weight=4).add_to(m)
+            # Smart fallback: use project area if present; else try lines; else points
+            if proj_area_fallback:
+                geometry_to_folium(
+                    {"rings": proj_area_fallback},
+                    color="#2e7d32",
+                    weight=3,
+                    fill=True,
+                    fill_opacity=0.20,
+                    feature_type="polygon",
+                ).add_to(m)
+            elif apex_parts:
+                if isinstance(apex_parts[0], (list, tuple)) and apex_parts and apex_parts[0] and isinstance(apex_parts[0][0], (list, tuple)):
+                    geometry_to_folium(
+                        {"paths": apex_parts},
+                        color="#2e7d32",
+                        weight=4,
+                        opacity=0.85,
+                        feature_type="line",
+                    ).add_to(m)
+                else:
+                    pts = [p for p in apex_parts if _is_pair(p)]
+                    if pts:
+                        geometry_to_folium(
+                            pts,
+                            feature_type="point",
+                            icon=folium.Icon(color="blue"),
+                        ).add_to(m)
+    except Exception:
+        # If APEX context isn’t available, fall back to older keys for backward-compat
+        project_geom_display = st.session_state.get("project_geometry")
+        project_geom_type = (st.session_state.get("project_geometry_type") or "").lower()
+        if project_geom_display and project_geom_type:
+            if project_geom_type in ("point",):
+                geometry_to_folium(
+                    project_geom_display, 
+                    feature_type="point", 
+                    icon=folium.Icon(color="blue"),
+                    tooltip="Project Footprint"
+                ).add_to(m)
+            elif project_geom_type in ("line", "linestring"):
+                geometry_to_folium(
+                    project_geom_display, 
+                    feature_type="line", 
+                    weight=15,
+                    opacity=.07,
+                    tooltip="Project Footprint"
+                ).add_to(m)
+            elif project_geom_type in ("polygon",):
+                geometry_to_folium(
+                    project_geom_display,
+                    feature_type="polygon",
+                    weight=4,
+                    opacity=0.8,
+                    fill=True,
+                    fill_opacity=0.15,
+                    tooltip="Project Footprint"
+                ).add_to(m)
+            else:
+                geometry_to_folium(
+                    project_geom_display, 
+                    feature_type="line", 
+                    weight=4).add_to(m)
 
     # Markers: Start/End points (always on top)
     start_pt = (
@@ -2053,6 +2157,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
             icon=folium.Icon(color="green", icon="play", prefix="fa"),
             tooltip="Start"
         ).add_to(m)
+
     if isinstance(end_pt, dict) and end_pt.get("lonlat"):
         geometry_to_folium(
             [end_pt["lonlat"]],
@@ -2094,7 +2199,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         except Exception:
             return None
 
-    # >>> CHANGE: Prefer Start/End bounds when existing and both valid; else keep previous behavior.
+    # >>> CHANGE (retained): Prefer Start/End bounds when existing and both valid; else use area
     if (
         is_existing
         and isinstance(start_pt, dict) and start_pt.get("lonlat")
@@ -2116,7 +2221,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
             or st.session_state.get("impact_area")  # ← guaranteed fallback
         )
         bounds = _compute_bounds(preferred_fit_geom)
-    # <<< CHANGE END
 
     if bounds:
         m.fit_bounds(bounds)
@@ -2139,7 +2243,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     # Return the package (ensure IDs are preserved; name from route_name)
     # -----------------------------------------------------
     ti_final = st.session_state.get(ti_key, {}) or {}
-
     if isinstance(package, dict):
         # Update only the managed fields
         for k in ("route_id", "route_name", "route_geom", "start_point", "end_point"):
@@ -2166,14 +2269,17 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                 package["objectid"] = parent_oid
             for alt in ("OBJECTID", "objectId", "ti_objectid"):
                 package.pop(alt, None)
+
             if route_oid is not None:
                 package["route_objectid"] = route_oid
             for alt in ("routeObjectId", "route_OBJECTID"):
                 package.pop(alt, None)
+
             if start_oid is not None:
                 package["start_objectid"] = start_oid
             for alt in ("startObjectId", "start_OBJECTID"):
                 package.pop(alt, None)
+
             if end_oid is not None:
                 package["end_objectid"] = end_oid
             for alt in ("endObjectId", "end_OBJECTID"):
@@ -2207,6 +2313,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         "area": (buffered_area or area_for_display) if not is_existing else package_area,
     }
     return out_pkg
+
 
 
 
