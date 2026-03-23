@@ -5,6 +5,7 @@ def run_manager_app():
     from agol.agol_util import select_record, get_multiple_fields
     from tabs.traffic_impacts import manage_traffic_impacts
     from tabs.communities import manage_impacted_communities
+    from tabs.information import manage_information
 
     # ─────────────────────────────────────────────────────────────
     # Helpers
@@ -445,7 +446,8 @@ def run_manager_app():
 
             # Define tab callables. Only the chosen one will run.
             def _tab_information():
-                st.info("Information Management Tab Under Development")
+                with st.container(border=True):
+                    manage_information()
 
             def _tab_footprint():
                 st.info("Footprint Management Tab Under Development")
