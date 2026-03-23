@@ -1563,7 +1563,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     - When Select Route is active → map clicks select a route
     - When Start/End active → map clicks snap endpoints
     - Draw order: Project Geometry (footprint) → Routes → Markers (Start/End)
-
     VIEWPORT POLICY (fit_bounds every render):
     - The map always calls `fit_bounds(bounds)` to the current project/area on render.
     - Segmented-control changes do not change which area we fit to; they only change click behavior.
@@ -1743,6 +1742,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     buffered_area = st.session_state.get("impact_area")  # from Manage
     fit_geom_key = f"{key_prefix}fit_bounds_geom"
     parent_fit_geom = st.session_state.get(fit_geom_key)
+
     if is_existing and package_area:
         area_for_display = package_area
     else:
@@ -1795,6 +1795,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
             for k in ("route_id", "route_name", "route_geom", "start_point", "end_point"):
                 if package.get(k) is not None:
                     ti_dict[k] = package.get(k)
+
             if package.get("route_id") is not None:
                 st.session_state[sel_id_key] = package.get("route_id")
             if package.get("route_name") is not None:
@@ -1912,6 +1913,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                         "route_geom": st.session_state[sel_geom_key],
                     }
                 )
+
                 if isinstance(package, dict):
                     package["route_id"] = st.session_state[ti_key]["route_id"]
                     package["route_name"] = st.session_state[ti_key]["route_name"]
@@ -1979,9 +1981,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
 
     # ─────────────────────────────────────────────────────────────
     # PROJECT GEOMETRY — render FIRST so it sits UNDER routes & markers
-    # Symbology aligned to shapefile tools (blue), with special rule for lines:
-    #   lines → weight=15, opacity=0.7; polygons → fill_opacity=0.30; points → blue
-    # Tooltip for all project geometry layers: "PROJECT FOOTPRINT"
     # ─────────────────────────────────────────────────────────────
     FOOTPRINT_COLOR = "#3388ff"
     FOOTPRINT_LINE_WEIGHT = 15
@@ -2015,7 +2014,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                     tooltip=FOOTPRINT_TOOLTIP,
                     feature_type="line",
                 ).add_to(m)
-
         elif geom_type in ("boundary", "polygon", "area"):
             rings = apex_parts if apex_parts else (proj_area_fallback or [])
             if rings:
@@ -2028,7 +2026,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                     tooltip=FOOTPRINT_TOOLTIP,
                     feature_type="polygon",
                 ).add_to(m)
-
         elif geom_type in ("site", "point"):
             pts = [p for p in apex_parts if _is_pair(p)]
             if pts:
@@ -2038,7 +2035,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                     icon=folium.Icon(color="blue"),
                     tooltip=FOOTPRINT_TOOLTIP,
                 ).add_to(m)
-
         else:
             # Smart fallback: use project area if present; else try lines; else points
             if proj_area_fallback:
@@ -2070,7 +2066,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
                             icon=folium.Icon(color="blue"),
                             tooltip=FOOTPRINT_TOOLTIP,
                         ).add_to(m)
-
     except Exception:
         # Legacy keys fallback (also CAPITALIZED tooltip and corrected opacity=0.70)
         project_geom_display = st.session_state.get("project_geometry")
@@ -2140,6 +2135,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
 
             # Keep strong red highlight on hover so gray routes light up
             highlight = lambda f: {"color": "#e53935", "weight": 6, "opacity": 1.0}
+
             folium.GeoJson(
                 data=feature,
                 style_function=lambda f, c=base_color, w=base_weight, o=base_opacity: _style_factory(c, w, o),
@@ -2190,6 +2186,28 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         ).add_to(m)
 
     # ---- FIT-BOUNDS ----
+    # New priority:
+    # 1) Start + End
+    # 2) Only Start or Only End
+    # 3) Selected Route
+    # 4) Project Area (fallback)
+    def _valid_point_obj(pt: dict) -> bool:
+        return (
+            isinstance(pt, dict)
+            and isinstance(pt.get("lonlat"), (list, tuple))
+            and len(pt["lonlat"]) == 2
+            and all(isinstance(v, (int, float)) for v in pt["lonlat"])
+        )
+
+    def _bounds_from_points(points_lonlat):
+        if not points_lonlat:
+            return None
+        xs = [p[0] for p in points_lonlat]
+        ys = [p[1] for p in points_lonlat]
+        west, east = min(xs), max(xs)
+        south, north = min(ys), max(ys)
+        return [[south, west], [north, east]]
+
     def _compute_bounds(geom):
         if not geom:
             return None
@@ -2222,21 +2240,31 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         except Exception:
             return None
 
-    # >>> CHANGE (retained): Prefer Start/End bounds when existing and both valid; else use area
-    if (
-        is_existing
-        and isinstance(start_pt, dict) and start_pt.get("lonlat")
-        and isinstance(end_pt, dict) and end_pt.get("lonlat")
-    ):
-        # Build bounds from just the two endpoints (lon/lat preserved)
+    bounds = None
+    PAD = 1e-5  # tiny padding to avoid too-tight boxes
+
+    # 1) Start + End
+    if _valid_point_obj(start_pt) and _valid_point_obj(end_pt):
         s_lon, s_lat = start_pt["lonlat"]
         e_lon, e_lat = end_pt["lonlat"]
         south, north = min(s_lat, e_lat), max(s_lat, e_lat)
         west, east = min(s_lon, e_lon), max(s_lon, e_lon)
-        # Add a tiny padding to avoid an overly tight box
-        pad = 1e-5
-        bounds = [[south - pad, west - pad], [north + pad, east + pad]]
-    else:
+        bounds = [[south - PAD, west - PAD], [north + PAD, east + PAD]]
+
+    # 2) Only Start or Only End
+    elif _valid_point_obj(start_pt):
+        lon, lat = start_pt["lonlat"]
+        bounds = [[lat - PAD, lon - PAD], [lat + PAD, lon + PAD]]
+    elif _valid_point_obj(end_pt):
+        lon, lat = end_pt["lonlat"]
+        bounds = [[lat - PAD, lon - PAD], [lat + PAD, lon + PAD]]
+
+    # 3) Selected Route
+    elif selected_geom:
+        bounds = _compute_bounds(selected_geom)
+
+    # 4) Project Area (fallback)
+    if not bounds:
         preferred_fit_geom = (
             st.session_state.get("apex_proj_area")
             or st.session_state.get(fit_geom_key)
@@ -2266,7 +2294,6 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     # Return the package (ensure IDs are preserved; name from route_name)
     # -----------------------------------------------------
     ti_final = st.session_state.get(ti_key, {}) or {}
-
     if isinstance(package, dict):
         # Update only the managed fields
         for k in ("route_id", "route_name", "route_geom", "start_point", "end_point"):
@@ -2337,6 +2364,7 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
         "area": (buffered_area or area_for_display) if not is_existing else package_area,
     }
     return out_pkg
+
 
 
 
