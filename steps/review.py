@@ -18,13 +18,13 @@ def goto_step(target_step: int):
 
 def header_with_edit(title: str, target_step: int, *, help: str = None):
     """Render a left-aligned section header with a right-aligned EDIT button."""
-    left, right = st.columns([1, 0.5])
+    left, right = st.columns([1, 0.4])
     with left:
         st.markdown(f"""
 ##### {title}
         """, unsafe_allow_html=True)
     with right:
-        is_clicked = st.button("⬅️ **JUMP TO SECTION**", help=help, key=f"edit_{target_step}")
+        is_clicked = st.button("⬅️ JUMP TO SECTION", help=help, key=f"edit_{target_step}")
         if is_clicked:
             goto_step(target_step)                         # ✅ ensure rerun + correct key
 
