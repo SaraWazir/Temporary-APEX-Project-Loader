@@ -34,7 +34,7 @@ def fetch_traffic_impacts(
     progress_cb: Optional[Callable[[int, str], None]] = None
 ):
     """
-    Pull all Traffic Impact Events for the current APEX project (by apex_guid),
+    Pull all Impacted Routes for the current APEX project (by apex_guid),
     and populate:
       - st.session_state["existing_tie_records"] : list[dict] (normalized records)
       - st.session_state["traffic_impacts_list"] : list[dict] (same shape used across UI)
@@ -109,7 +109,7 @@ def fetch_traffic_impacts(
 
     # ---------------- Query parent features ----------------
     if progress_cb:
-        progress_cb(20, "Querying traffic impacts…")
+        progress_cb(20, "Querying impacted routes…")
     parent_features = select_record(
         url=ti_url,
         layer=lyr_parent,
@@ -462,21 +462,22 @@ def manage_traffic_impacts():
     # ------------------------------------------------------------
     # Header (title + Add button in the same row)
     # ------------------------------------------------------------
-    title_text = "##### MANAGE TRAFFIC IMPACT EVENTS"
+    title_text = "##### MANAGE ROUTES IMPACTED BY THE PROJECT'S TRAFFIC IMPACTS"
     title_col, btn_col = st.columns([6, 2], vertical_alignment="center")
     with title_col:
         st.markdown(f"{title_text}\n")
     with btn_col:
-        if st.button("➕ **ADD EVENT**", key="btn_add_event_header", use_container_width=True):
+        if st.button("➕ **ADD IMPACTED ROUTE**", key="btn_add_event_header", use_container_width=True):
             st.session_state["tie_events"].append(
                 _new_event(impact_area_default=st.session_state.get("impact_area"))
             )
             st.rerun()
 
     st.caption(
-        "Manage the Traffic Impact Events for this project. You can review and update an existing event, "
-        "delete one you no longer need, or create a new Traffic Impact Event to add to the project."
+        "Manage routes impacted by this project’s traffic impacts. You can add new impacted routes, "
+        "update existing routes based on current traffic impact information, or remove routes that are no longer affected."
     )
+
 
     # ------------------------------------------------------------
     # Impact buffer (cached per project geometry + params)
