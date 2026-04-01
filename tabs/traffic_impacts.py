@@ -462,7 +462,7 @@ def manage_traffic_impacts():
     # ------------------------------------------------------------
     # Header (title + Add button in the same row)
     # ------------------------------------------------------------
-    title_text = "##### MANAGE IMPACTED ROUTES"
+    title_text = "##### MANAGE IMPACTED ROUTES WORK EXTENT"
     title_col, btn_col = st.columns([6, 2], vertical_alignment="center")
     with title_col:
         st.markdown(f"{title_text}\n")

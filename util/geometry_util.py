@@ -1570,13 +1570,13 @@ def select_route_and_points(container, key_prefix: str = "", is_existing: bool =
     """
     # --- Headings (contextual) ---
     if not is_existing:
-        st.markdown("###### ADD IMPACTED ROUTE", unsafe_allow_html=True)
+        st.markdown("###### ADD ROUTE'S TRAFFIC IMPACT WORK EXTENT", unsafe_allow_html=True)
         st.caption(
             "Choose the route affected by the APEX project's traffic impact and specify the start and end points "
             "for the impact. Once all values are set, you can Load it from the page controls."
         )
     else:
-        st.markdown("###### MANAGE IMPACTED ROUTE", unsafe_allow_html=True)
+        st.markdown("###### MANAGE ROUTE'S TRAFFIC IMPACT WORK EXTENT", unsafe_allow_html=True)
         st.caption(
             "Review and modify the selected impacted route. After adjusting the route, start, and end "
             "points, use the page controls to Update or Delete."
