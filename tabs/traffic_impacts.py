@@ -475,8 +475,8 @@ def manage_traffic_impacts():
 
     st.caption(
         "Manage routes affected by this project’s traffic impacts and define their work extents. "
-        "Add new impacts by selecting an impacted route and setting the extent with a start and end point. "
-        "Update existing work extents based on current information, or remove routes that are no longer affected."
+        "Add new traffic impacts by selecting an impacted route and setting the extent with a start and end point. "
+        "Update existing traffic impacts work extent based on current traffic impact information, or remove routes that are no longer affected."
     )
 
 
