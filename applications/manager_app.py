@@ -418,7 +418,7 @@ def run_manager_app():
             st.markdown("<h5>CHOOSE A CATEGORY TO MANAGE</h5>", unsafe_allow_html=True)
 
             # Available tabs (labels) – unchanged
-            options = ["INFORMATION", "FOOTPRINT", "IMPACTED ROUTES", "COMMUNITIES", "DEPLOYMENT"]
+            options = ["INFORMATION", "FOOTPRINT", "TRAFFIC IMPACTS", "COMMUNITIES", "DEPLOYMENT"]
 
             # ✅ NEW: Preselect from session state's `manager_tab` (if valid).
             # This runs BEFORE rendering the segmented control and only updates
@@ -466,7 +466,7 @@ def run_manager_app():
             TAB_DISPATCH = {
                 "INFORMATION": _tab_information,
                 "FOOTPRINT": _tab_footprint,
-                "IMPACTED ROUTES": _tab_traffic_impacts,
+                "TRAFFIC IMPACTS": _tab_traffic_impacts,
                 "COMMUNITIES": _tab_communities,
                 "DEPLOYMENT": _tab_deployment,
             }

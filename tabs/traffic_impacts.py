@@ -462,20 +462,20 @@ def manage_traffic_impacts():
     # ------------------------------------------------------------
     # Header (title + Add button in the same row)
     # ------------------------------------------------------------
-    title_text = "##### MANAGE IMPACTED ROUTES WORK EXTENT"
+    title_text = "##### MANAGE TRAFFIC IMPACT WORK EXTENTS"
     title_col, btn_col = st.columns([6, 2], vertical_alignment="center")
     with title_col:
         st.markdown(f"{title_text}\n")
     with btn_col:
-        if st.button("➕ **ADD ROUTE**", key="btn_add_event_header", use_container_width=True):
+        if st.button("➕ **ADD IMPACT**", key="btn_add_event_header", use_container_width=True):
             st.session_state["tie_events"].append(
                 _new_event(impact_area_default=st.session_state.get("impact_area"))
             )
             st.rerun()
 
     st.caption(
-        "Manage routes impacted by this project’s traffic impacts. You can add new impacted routes, "
-        "update existing routes based on current traffic impact information, or remove routes that are no longer affected."
+        "Manage routes impacted by this project’s traffic impacts and their work extents. You can add new traffic impacts to a project by selecting an impacted route and setting the exten by dropping a start and end point, "
+        "update existing traffic impacts work extent based on current traffic impact information, or remove routes that are no longer affected."
     )
 
 
