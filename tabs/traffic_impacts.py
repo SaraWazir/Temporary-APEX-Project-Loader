@@ -133,10 +133,10 @@ def fetch_traffic_impacts(
 
         # NAME NORMALIZATION:
         # If an existing Traffic Impact Event has Event_Name == "Blank Event",
-        # rewrite it to "New Event" before passing forward.
+        # rewrite it to "New Impact" before passing forward.
         raw_name = attrs.get("Event_Name")
         ti_event_name = (
-            "New Event" if isinstance(raw_name, str) and raw_name.strip() == "Blank Event"
+            "New Impact" if isinstance(raw_name, str) and raw_name.strip() == "Blank Event"
             else raw_name
         )
 
@@ -400,7 +400,7 @@ def _deploy_to_agol(
 # These helpers were previously nested inside manage_traffic_impacts().
 # Keeping behavior identical; only their location changed.
 # ---------------------------------------------------------------------
-def _new_event(label="New Event", impact_area_default=None):
+def _new_event(label="New Impact", impact_area_default=None):
     eid = st.session_state["tie_next_id"]
     st.session_state["tie_next_id"] += 1
     return {
@@ -663,9 +663,9 @@ def manage_traffic_impacts():
 
             if is_existing:
                 # Minimal change for your request:
-                # If this existing event's label is "New Event" (normalized from a blank name),
+                # If this existing event's label is "New Impact" (normalized from a blank name),
                 # show the primary button text as "LOAD" but still perform UPDATE on click.
-                primary_label = "LOAD" if (ev.get("label") == "New Event") else "UPDATE"
+                primary_label = "LOAD" if (ev.get("label") == "New Impact") else "UPDATE"
 
                 with btn_col1:
                     update_clicked = st.button(
@@ -787,7 +787,7 @@ def manage_traffic_impacts():
 
                 if clear_clicked:
                     _clear_tab_selection(key_prefix)
-                    ev["label"] = "New Event"
+                    ev["label"] = "New Impact"
                     ev["selected_impact_area"] = st.session_state.get("impact_area")
                     st.rerun()
 
