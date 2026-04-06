@@ -596,3 +596,49 @@ def slice_and_buffer_route(route_geom: list, start_point: list, end_point: list,
         raise RuntimeError("create_buffers produced no output for sliced segment.")
 
     return buffer_rings
+
+
+
+
+def simplify_geometry(geom, geom_type, tolerance):
+    """
+    Simplify line or polygon geometry.
+    tolerance is in degrees (lat/lon).
+    """
+    from shapely.geometry import LineString, Polygon
+
+    if geom_type == "line":
+        # Expect list-of-paths [[ [lat, lon], ... ]]
+        simplified_paths = []
+
+        for path in geom:
+            if len(path) < 3:
+                simplified_paths.append(path)
+                continue
+
+            line = LineString([(pt[1], pt[0]) for pt in path])
+            simple = line.simplify(tolerance, preserve_topology=True)
+
+            simplified_paths.append([[y, x] for x, y in simple.coords])
+
+        return simplified_paths
+
+    if geom_type == "polygon":
+        # Rings -> Polygon
+        outer = [(pt[1], pt[0]) for pt in geom[0]]
+        holes = [
+            [(pt[1], pt[0]) for pt in ring]
+            for ring in geom[1:]
+        ] if len(geom) > 1 else []
+
+        poly = Polygon(outer, holes)
+        simple = poly.simplify(tolerance, preserve_topology=True)
+
+        return [
+            [[y, x] for x, y in simple.exterior.coords]
+        ] + [
+            [[y, x] for x, y in ring.coords]
+            for ring in simple.interiors
+        ]
+
+    return geom  # points untouched
