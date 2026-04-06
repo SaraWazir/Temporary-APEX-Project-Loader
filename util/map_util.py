@@ -730,28 +730,85 @@ def set_bounds_boundary(boundary):
 # They are intentionally simple and predictable for consistent UX.
 # =============================================================================
 
-def set_zoom(bounds):
+
+def set_zoom(bounds, map_width_px=800, map_height_px=520, padding_px=40,
+             tile_size=256, min_zoom=1, max_zoom=18):
     """
-    Compute an approximate zoom level from the bounds, using only the longitude span.
+    Compute a Leaflet/Folium-style zoom level that fits the given bounds
+    into a map viewport, using BOTH longitude and latitude spans with
+    Web Mercator math (much more accurate than lon-only).
 
     Parameters:
         bounds: [[min_lat, min_lon], [max_lat, max_lon]]
+        map_width_px:  map viewport width in pixels (approx)
+        map_height_px: map viewport height in pixels (approx)
+        padding_px:    padding applied on each side (pixels)
+        tile_size:     tile size in pixels (Leaflet default is 256)
+        min_zoom:      clamp zoom to this minimum
+        max_zoom:      clamp zoom to this maximum
 
     Returns:
-        zoom: An approximate zoom level (integer)
+        zoom: integer zoom level suitable for folium.Map(..., zoom_start=zoom)
 
     Notes:
-        - Uses a log-based estimate: log2(360 / delta_lon), then adjusts down.
-        - If delta_lon is 0, returns 0 to avoid division by zero.
+        - Uses Web Mercator projection for latitude span (critical in Alaska).
+        - Uses the tighter of the lon-fit and lat-fit zooms.
+        - If bounds collapse to a point, returns max_zoom (clamped).
     """
-    min_lat, min_lon = bounds[0]
-    max_lat, max_lon = bounds[1]
+    (min_lat, min_lon), (max_lat, max_lon) = bounds
+
+    # Normalize / sanity
+    min_lat, max_lat = float(min(min_lat, max_lat)), float(max(min_lat, max_lat))
+    min_lon, max_lon = float(min(min_lon, max_lon)), float(max(min_lon, max_lon))
+
+    # Prevent invalid Mercator at the poles
+    def _clamp_lat(lat):
+        return max(-85.05112878, min(85.05112878, lat))
+
+    min_lat = _clamp_lat(min_lat)
+    max_lat = _clamp_lat(max_lat)
+
+    # Dateline-safe lon span: choose the smaller arc
     delta_lon = abs(max_lon - min_lon)
-    if delta_lon == 0:
-        return 0  # Avoid division by zero; return a default zoom.
-    zoom = math.log(360 / delta_lon, 2)
-    zoom = zoom-1
-    return int(zoom)
+    if delta_lon > 180:
+        delta_lon = 360 - delta_lon
+
+    # Available pixels after padding
+    avail_w = max(1, int(map_width_px - 2 * padding_px))
+    avail_h = max(1, int(map_height_px - 2 * padding_px))
+
+    # If bounds are effectively a point, zoom way in
+    if delta_lon < 1e-12 and abs(max_lat - min_lat) < 1e-12:
+        return int(max(min_zoom, min(max_zoom, max_zoom)))
+
+    # Convert latitude to normalized Web Mercator Y in [0,1]
+    def _merc_y(lat_deg):
+        lat_rad = math.radians(lat_deg)
+        return (1.0 - math.log(math.tan(lat_rad) + (1.0 / math.cos(lat_rad))) / math.pi) / 2.0
+
+    y1 = _merc_y(min_lat)
+    y2 = _merc_y(max_lat)
+    delta_y = abs(y2 - y1)
+
+    # Normalized lon span in [0,1]
+    delta_x = delta_lon / 360.0
+
+    # Avoid divide-by-zero
+    delta_x = max(delta_x, 1e-15)
+    delta_y = max(delta_y, 1e-15)
+
+    # At zoom z: world size in pixels = tile_size * 2^z
+    # Span_px = delta * world_px <= available_px  =>  2^z <= available_px / (tile_size * delta)
+    # So z <= log2(available_px / (tile_size * delta))
+    zoom_x = math.log2(avail_w / (tile_size * delta_x))
+    zoom_y = math.log2(avail_h / (tile_size * delta_y))
+
+    # Choose the smaller zoom so BOTH dimensions fit
+    zoom = int(math.floor(min(zoom_x, zoom_y)))
+
+    # Clamp
+    zoom = max(min_zoom, min(max_zoom, zoom))
+    return zoom
 
 
 def set_center(bounds):

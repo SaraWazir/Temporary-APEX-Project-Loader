@@ -1137,36 +1137,37 @@ def aashtoware_path(points, container):
 
     For each entry (per BOP/EOP pair):
     {
-        "route_id": str,
-        "route_name": str,
-
-        # Originals from AASHTOWare (preserved)
-        "bop_orig": [lon, lat],
-        "eop_orig": [lon, lat],
-
-        # Snapped results (preferred for display and slicing)
-        "bop_snapped": [lon, lat] | None,
-        "eop_snapped": [lon, lat] | None,
-
-        # Sliced segment (single or multi-part) in [lon,lat] order
-        "route_geom": [[lon,lat], ...] or [[[lon,lat],...], ...]
+      "route_id": str,
+      "route_name": str,
+      # Originals from AASHTOWare (preserved)
+      "bop_orig": [lon, lat],
+      "eop_orig": [lon, lat],
+      # Snapped results (preferred for display and slicing)
+      "bop_snapped": [lon, lat] \ None,
+      "eop_snapped": [lon, lat] \ None,
+      # Sliced segment (single or multi-part) in [lon,lat] order
+      "route_geom": [[lon,lat], ...] or [[[lon,lat],...], ...]
     }
 
     HARD REQUIREMENTS:
     - BOP and EOP for an entry MUST come from the SAME route_id in the points list.
     - The geometry used MUST be fetched by exact attribute match on that route_id.
     - Coordinate order remains [lon, lat] (floats).
-
     Writes nothing automatically to session_state["selected_route"]; only on LOAD.
+
+    UPDATED (targeted fix):
+    - When multiple BOP/EOP pairs exist on the SAME route_id, pair BOPs to EOPs by
+      along-route position (chainage) so each “group” is snipped independently.
+      This prevents snipping between two separate groups on the same route.
     """
     target = container if container is not None else st
     with target:
         st.markdown("###### AASHTOWARE COORDINATES\n", unsafe_allow_html=True)
         st.caption(
-        "Begin (BOP) and End (EOP) points from AASHTOWare are snapped to the AGOL route, "
-        "and the route segment between them is displayed. Tabs show the snapped coordinates "
-        "for each route. If the footprint appears incorrect or misaligned, verify the BOP and "
-        "EOP values in the **AASHTOWare to APEX** table and update them in AASHTOWare if errors are found."
+            "Begin (BOP) and End (EOP) points from AASHTOWare are snapped to the AGOL route, "
+            "and the route segment between them is displayed. Tabs show the snapped coordinates "
+            "for each route. If the footprint appears incorrect or misaligned, verify the BOP and "
+            "EOP values in the **AASHTOWare to APEX** table and update them in AASHTOWare if errors are found."
         )
 
         # ─────────────────────────────────────────────────────────────────────
@@ -1184,22 +1185,26 @@ def aashtoware_path(points, container):
             flat.extend(_as_list(points.get("EOP") or points.get("eop")))
         else:
             flat = []
+
         if not flat:
             st.info("No AASHTOWare BOP/EOP points were provided.")
             return {}
 
         # ─────────────────────────────────────────────────────────────────────
-        # 1) STRICT grouping by route_id; pair BOP[i]↔EOP[i] for each route_id
-        # (Entries preserve encounter order; route_name taken from points list.)
+        # 1) STRICT grouping by route_id; collect BOPs and EOPs (do NOT pair by index)
+        #    Pairing is computed later using along-route chainage to prevent cross-group snips.
         # ─────────────────────────────────────────────────────────────────────
-        grouped = {}  # rid -> {"name": str, "bops": [[lon,lat],...], "eops": [[lon,lat],...]}
+        grouped = {}  # rid -> {"name": str, "bops": [ {"lonlat":[lon,lat], "order":int}, ... ], "eops":[...]}
+        order_counter = 0
         for rec in flat:
             t = str(rec.get("type", "")).strip().upper()
             if t not in ("BOP", "EOP"):
                 continue
+
             rid = rec.get("route_id") or rec.get("routeID") or rec.get("Route_ID")
             if rid is None:
                 continue
+
             rname = rec.get("route_name") or rec.get("routeName") or rec.get("Route_Name") or ""
             lon, lat = rec.get("lon"), rec.get("lat")
             try:
@@ -1210,49 +1215,23 @@ def aashtoware_path(points, container):
             bucket = grouped.setdefault(str(rid), {"name": "", "bops": [], "eops": []})
             if not bucket["name"] and isinstance(rname, str):
                 bucket["name"] = rname.strip()
-            if t == "BOP":
-                bucket["bops"].append([lon_f, lat_f])
-            elif t == "EOP":
-                bucket["eops"].append([lon_f, lat_f])
 
-        # Build entries list: one entry per BOP/EOP pair for each route_id
-        entries = []
-        for rid, data in grouped.items():
-            bops = data["bops"]
-            eops = data["eops"]
-            n = min(len(bops), len(eops))
-            for i in range(n):
-                entries.append({
-                    "route_id": rid,
-                    "route_name": data["name"] or "",
-                    # Preserve originals
-                    "bop_orig": bops[i],
-                    "eop_orig": eops[i],
-                    # Snapped (to be computed)
-                    "bop_snapped": None,
-                    "eop_snapped": None,
-                    # Sliced segment
-                    "route_geom": None,
-                })
-        if not entries:
-            st.info("No complete BOP/EOP pairs found per route_id.")
+            order_counter += 1
+            payload = {"lonlat": [lon_f, lat_f], "order": order_counter}
+
+            if t == "BOP":
+                bucket["bops"].append(payload)
+            elif t == "EOP":
+                bucket["eops"].append(payload)
+
+        # Require at least one route with both BOP and EOP present
+        has_any_complete = any((len(v.get("bops") or []) > 0 and len(v.get("eops") or []) > 0) for v in grouped.values())
+        if not has_any_complete:
+            st.info("No complete BOP/EOP sets found per route_id.")
             return {}
 
-        # Optional seed (now includes originals; snapped slots empty initially)
-        st.session_state["awp_route_entries"] = [
-            {
-                "route_id": e["route_id"],
-                "route_name": e["route_name"],
-                "bop_orig": e["bop_orig"],
-                "eop_orig": e["eop_orig"],
-                "bop_snapped": e.get("bop_snapped"),
-                "eop_snapped": e.get("eop_snapped"),
-            }
-            for e in entries
-        ]
-
         # ─────────────────────────────────────────────────────────────────────
-        # 2) Cache guard signature (based on originals + service)
+        # 2) Cache guard signature (based on raw originals + service)
         # ─────────────────────────────────────────────────────────────────────
         def _fingerprint(obj) -> str:
             try:
@@ -1264,15 +1243,14 @@ def aashtoware_path(points, container):
 
         ri = st.session_state.get("route_intersect") or {}
         sig_payload = {
-            "entries": [
-                {
-                    "route_id": e["route_id"],
-                    "route_name": e["route_name"],
-                    "bop_orig": e["bop_orig"],
-                    "eop_orig": e["eop_orig"],
+            "grouped": {
+                rid: {
+                    "route_name": data.get("name") or "",
+                    "bops": [p.get("lonlat") for p in (data.get("bops") or [])],
+                    "eops": [p.get("lonlat") for p in (data.get("eops") or [])],
                 }
-                for e in entries
-            ],
+                for rid, data in grouped.items()
+            },
             "service": {
                 "url": ri.get("url"),
                 "layer": int(ri.get("layer", 0)),
@@ -1280,20 +1258,234 @@ def aashtoware_path(points, container):
             },
         }
         sig = _fingerprint(sig_payload)
-        cache_key = "awp_paths_cache_v2"
+
+        # Bump cache version because pairing logic changed (prevents stale wrong-pair cache reuse)
+        cache_key = "awp_paths_cache_v3"
         if cache_key not in st.session_state:
             st.session_state[cache_key] = {}
         cached = st.session_state[cache_key].get(sig)
 
         # ─────────────────────────────────────────────────────────────────────
-        # 3) For each entry → fetch exact route geometry, snap, slice
+        # Helper functions: extract parts, snap-to-line with chainage, and pair by chainage
+        # ─────────────────────────────────────────────────────────────────────
+        def _extract_parts(route_geom):
+            """
+            Returns list of parts where each part is a list of [lon,lat].
+            Handles:
+              - Esri Polyline dict: {"paths":[ [...], [...], ... ]}
+              - Plain list: [[lon,lat], ...] (single part)
+              - Already list-of-parts: [[[lon,lat],...], ...]
+            """
+            if route_geom is None:
+                return []
+            if isinstance(route_geom, dict):
+                paths = route_geom.get("paths")
+                if isinstance(paths, list) and paths:
+                    # Ensure proper shape
+                    out = []
+                    for p in paths:
+                        if isinstance(p, list) and p and isinstance(p[0], (list, tuple)) and len(p[0]) == 2:
+                            out.append([[float(x), float(y)] for x, y in p])
+                    return out
+                # Fallback: try common Esri GeoJSON-ish shape
+                coords = route_geom.get("coordinates")
+                if isinstance(coords, list) and coords:
+                    # Could be LineString or MultiLineString-like
+                    if coords and isinstance(coords[0], (list, tuple)) and len(coords[0]) == 2:
+                        return [[[float(x), float(y)] for x, y in coords]]
+                    if coords and isinstance(coords[0], list) and coords[0] and isinstance(coords[0][0], (list, tuple)) and len(coords[0][0]) == 2:
+                        return [[[float(x), float(y)] for x, y in part] for part in coords]
+                return []
+            if isinstance(route_geom, list) and route_geom:
+                # single part: [[lon,lat], ...]
+                if isinstance(route_geom[0], (list, tuple)) and len(route_geom[0]) == 2 and all(isinstance(v, (int, float)) for v in route_geom[0]):
+                    return [[[float(x), float(y)] for x, y in route_geom]]
+                # multi-part: [[[lon,lat],...], ...]
+                if isinstance(route_geom[0], list) and route_geom[0] and isinstance(route_geom[0][0], (list, tuple)) and len(route_geom[0][0]) == 2:
+                    out = []
+                    for part in route_geom:
+                        if isinstance(part, list) and part and isinstance(part[0], (list, tuple)) and len(part[0]) == 2:
+                            out.append([[float(x), float(y)] for x, y in part])
+                    return out
+            return []
+
+        def _haversine(lon1, lat1, lon2, lat2):
+            R = 6371000.0
+            phi1, phi2 = math.radians(lat1), math.radians(lat2)
+            dphi = math.radians(lat2 - lat1)
+            dlmb = math.radians(lon2 - lon1)
+            a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2) ** 2
+            return 2 * R * math.asin(math.sqrt(a))
+
+        def _precompute_metrics(line_lonlat):
+            lengths = []
+            for i in range(len(line_lonlat) - 1):
+                lon1, lat1 = line_lonlat[i]
+                lon2, lat2 = line_lonlat[i + 1]
+                lengths.append(_haversine(lon1, lat1, lon2, lat2))
+            cum = [0.0]
+            for L in lengths:
+                cum.append(cum[-1] + L)
+            return {"lengths": lengths, "cum": cum}
+
+        def _snap_pt_to_line(pt_lonlat, line_lonlat, metrics=None):
+            """
+            Snap a [lon,lat] point to a single polyline part.
+            Returns dict: {"snapped":[lon,lat], "dist_m":float, "chainage_m":float, "seg_idx":int}
+            """
+            if metrics is None:
+                metrics = _precompute_metrics(line_lonlat)
+
+            cx, cy = float(pt_lonlat[0]), float(pt_lonlat[1])
+
+            # meters-per-degree at this latitude for distance approximation
+            deg_to_m_lat = 111320.0
+            deg_to_m_lon = 111320.0 * math.cos(math.radians(cy))
+
+            best = (float("inf"), None, None, None, None)  # (dist_m, px, py, seg_idx, chainage_m)
+
+            for i in range(len(line_lonlat) - 1):
+                ax, ay = line_lonlat[i]
+                bx, by = line_lonlat[i + 1]
+                dx, dy = (bx - ax), (by - ay)
+                if dx == 0 and dy == 0:
+                    continue
+
+                # projection parameter t in lon/lat plane
+                t = ((cx - ax) * dx + (cy - ay) * dy) / (dx * dx + dy * dy)
+                t = max(0.0, min(1.0, t))
+                px, py = ax + t * dx, ay + t * dy
+
+                # approximate perpendicular distance in meters
+                dist_m = math.hypot((cx - px) * deg_to_m_lon, (cy - py) * deg_to_m_lat)
+
+                if dist_m < best[0]:
+                    seg_len_m = metrics["lengths"][i] if i < len(metrics["lengths"]) else 0.0
+                    chain_m = metrics["cum"][i] + seg_len_m * t
+                    best = (dist_m, px, py, i, chain_m)
+
+            dist_m, px, py, seg_idx, chain_m = best
+            if px is None or py is None:
+                return None
+            return {
+                "snapped": [float(px), float(py)],
+                "dist_m": float(dist_m),
+                "chainage_m": float(chain_m),
+                "seg_idx": int(seg_idx) if seg_idx is not None else None,
+            }
+
+        def _pair_bops_eops_by_chainage(route_geom, bops, eops):
+            """
+            Pair BOPs to EOPs for a single route_id using along-route chainage.
+
+            Strategy:
+              1) Snap every BOP and EOP to the best route part (multipart-safe) and compute chainage.
+              2) Group by snapped part index.
+              3) Within each part, pair each BOP to the nearest unmatched EOP by absolute chainage difference.
+              4) If pairing fails (edge cases), fall back to encounter-order index pairing.
+            """
+            parts = _extract_parts(route_geom)
+            if not parts:
+                return []
+
+            # snap all points to their best part
+            snapped_bops = []
+            snapped_eops = []
+
+            # precompute metrics per part once
+            part_metrics = [(_precompute_metrics(p) if p and len(p) > 1 else None) for p in parts]
+
+            def _best_part_snap(p_lonlat):
+                best = None  # (dist_m, part_idx, snap_dict)
+                for pi, part in enumerate(parts):
+                    if not part or len(part) < 2:
+                        continue
+                    snap = _snap_pt_to_line(p_lonlat, part, metrics=part_metrics[pi])
+                    if snap is None:
+                        continue
+                    cand = (snap["dist_m"], pi, snap)
+                    if best is None or cand[0] < best[0]:
+                        best = cand
+                if best is None:
+                    return None
+                return {"part_idx": best[1], **best[2]}
+
+            for rec in bops or []:
+                ll = rec.get("lonlat")
+                if not (isinstance(ll, (list, tuple)) and len(ll) == 2):
+                    continue
+                snap = _best_part_snap(ll)
+                if snap:
+                    snapped_bops.append({**rec, **snap})
+
+            for rec in eops or []:
+                ll = rec.get("lonlat")
+                if not (isinstance(ll, (list, tuple)) and len(ll) == 2):
+                    continue
+                snap = _best_part_snap(ll)
+                if snap:
+                    snapped_eops.append({**rec, **snap})
+
+            if not snapped_bops or not snapped_eops:
+                return []
+
+            # group by part
+            bops_by_part = {}
+            eops_by_part = {}
+            for b in snapped_bops:
+                bops_by_part.setdefault(b["part_idx"], []).append(b)
+            for e in snapped_eops:
+                eops_by_part.setdefault(e["part_idx"], []).append(e)
+
+            pairs = []
+            for part_idx in sorted(set(bops_by_part.keys()) & set(eops_by_part.keys())):
+                b_list = sorted(bops_by_part[part_idx], key=lambda r: (r.get("chainage_m", 0.0), r.get("order", 0)))
+                e_list = sorted(eops_by_part[part_idx], key=lambda r: (r.get("chainage_m", 0.0), r.get("order", 0)))
+
+                used = set()
+                for b in b_list:
+                    # find nearest unmatched EOP by chainage distance
+                    best_j = None
+                    best_d = None
+                    for j, e in enumerate(e_list):
+                        if j in used:
+                            continue
+                        d = abs(float(b.get("chainage_m", 0.0)) - float(e.get("chainage_m", 0.0)))
+                        if best_d is None or d < best_d:
+                            best_d = d
+                            best_j = j
+                    if best_j is not None:
+                        used.add(best_j)
+                        pairs.append((b, e_list[best_j]))
+
+            # If nothing paired (rare), fall back to encounter-order pairing by original lists
+            if not pairs:
+                n = min(len(bops or []), len(eops or []))
+                for i in range(n):
+                    pairs.append((bops[i], eops[i]))
+
+            # sort pairs for stable rendering: by route-part then bop chainage then original order
+            def _pair_sort_key(pair):
+                b, e = pair
+                return (
+                    b.get("part_idx", 0),
+                    float(b.get("chainage_m", 0.0)),
+                    b.get("order", 0),
+                    float(e.get("chainage_m", 0.0)),
+                    e.get("order", 0),
+                )
+
+            return sorted(pairs, key=_pair_sort_key)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # 3) For each route_id → fetch exact route geometry, compute correct pairs, snap, slice
         # ─────────────────────────────────────────────────────────────────────
         if cached is None:
             progress_box = st.empty()
             prog = progress_box.progress(0, text="Preparing route geometry…")
 
-            def _update_progress(i: int, label: str):
-                total = max(1, len(entries))
+            def _update_progress(i: int, total: int, label: str):
+                total = max(1, total)
                 pct = int(round((i / total) * 100))
                 try:
                     prog.progress(pct, text=label)
@@ -1307,18 +1499,26 @@ def aashtoware_path(points, container):
             routes_layer = ri.get("layer", 0)
             id_field = ri.get("id_field") or "Route_ID"
 
-            out_entries = []
-            for idx, e in enumerate(entries, start=1):
-                rid = e["route_id"]
+            computed_entries = []
+            route_ids = list(grouped.keys())
+            total_routes = len(route_ids)
+
+            for r_idx, rid in enumerate(route_ids, start=1):
+                data = grouped.get(rid) or {}
+                bops = data.get("bops") or []
+                eops = data.get("eops") or []
+
+                if not bops or not eops:
+                    _update_progress(r_idx, total_routes, f"{rid}: missing BOP/EOP")
+                    continue
+
                 if not routes_url:
-                    e["route_geom"] = None
-                    out_entries.append(e)
-                    _update_progress(idx, f"{rid}: no route service configured")
+                    _update_progress(r_idx, total_routes, f"{rid}: no route service configured")
                     continue
 
                 # 3.1 Fetch geometry for THIS exact route_id
                 try:
-                    _update_progress(idx - 1, f"{rid}: fetching route geometry…")
+                    _update_progress(r_idx - 1, total_routes, f"{rid}: fetching route geometry…")
                     features = select_record(
                         url=str(routes_url),
                         layer=int(routes_layer),
@@ -1343,69 +1543,99 @@ def aashtoware_path(points, container):
                     geom = exact.get("geometry") if exact is not None else None
 
                 if not geom:
-                    e["route_geom"] = None
-                    out_entries.append(e)
-                    _update_progress(idx, f"{rid}: route geometry not found for exact Route_ID")
+                    _update_progress(r_idx, total_routes, f"{rid}: route geometry not found for exact Route_ID")
                     continue
 
-                # 3.2 Snap THIS entry's BOP/EOP to THIS geometry
-                bop = e.get("bop_orig")
-                eop = e.get("eop_orig")
-                try:
-                    _update_progress(idx - 1, f"{rid}: snapping BOP/EOP to route…")
-                    snapped_bop, snapped_eop, chosen_part = snap_bop_eop_to_route(
-                        route_geom=geom,
-                        bop_lonlat=bop,
-                        eop_lonlat=eop,
-                    )
-                    # Preserve originals; store snapped separately
-                    e["bop_snapped"] = snapped_bop
-                    e["eop_snapped"] = snapped_eop
-                except Exception:
-                    chosen_part = None
-
-                def _valid_pt(pt):
-                    return (
-                        isinstance(pt, (list, tuple))
-                        and len(pt) == 2
-                        and all(isinstance(v, (int, float)) for v in pt)
-                    )
-
-                if not chosen_part or not _valid_pt(e.get("bop_snapped")) or not _valid_pt(e.get("eop_snapped")):
-                    e["route_geom"] = None
-                    out_entries.append(e)
-                    _update_progress(idx, f"{rid}: endpoints could not be snapped to this Route_ID")
+                # 3.2 Compute correct pairings for this route_id (prevents cross-group snips)
+                pairs = _pair_bops_eops_by_chainage(geom, bops, eops)
+                if not pairs:
+                    _update_progress(r_idx, total_routes, f"{rid}: could not pair BOP/EOP for this route")
                     continue
 
-                # 3.3 Slice THIS route between THESE snapped points
-                try:
-                    _update_progress(idx - 1, f"{rid}: slicing segment between BOP/EOP…")
-                    seg = slice_route_between_points(
-                        route_geom=chosen_part,        # [[lon,lat], ...]
-                        start_point=e.get("bop_snapped"),
-                        end_point=e.get("eop_snapped"),
-                    )
-                except Exception:
-                    seg = None
+                # 3.3 For each paired BOP/EOP → snap (existing helper) + slice
+                for (b_rec, e_rec) in pairs:
+                    bop = b_rec.get("lonlat")
+                    eop = e_rec.get("lonlat")
+                    entry = {
+                        "route_id": rid,
+                        "route_name": data.get("name") or "",
+                        "bop_orig": bop,
+                        "eop_orig": eop,
+                        "bop_snapped": None,
+                        "eop_snapped": None,
+                        "route_geom": None,
+                    }
 
-                e["route_geom"] = seg
-                out_entries.append(e)
-                _update_progress(idx, f"{rid}: ready")
+                    # Snap THIS entry's BOP/EOP to THIS geometry (preserves prior snapping behavior)
+                    try:
+                        snapped_bop, snapped_eop, chosen_part = snap_bop_eop_to_route(
+                            route_geom=geom,
+                            bop_lonlat=bop,
+                            eop_lonlat=eop,
+                        )
+                        entry["bop_snapped"] = snapped_bop
+                        entry["eop_snapped"] = snapped_eop
+                    except Exception:
+                        chosen_part = None
+
+                    def _valid_pt(pt):
+                        return (
+                            isinstance(pt, (list, tuple))
+                            and len(pt) == 2
+                            and all(isinstance(v, (int, float)) for v in pt)
+                        )
+
+                    if not chosen_part or not _valid_pt(entry.get("bop_snapped")) or not _valid_pt(entry.get("eop_snapped")):
+                        entry["route_geom"] = None
+                        computed_entries.append(entry)
+                        continue
+
+                    # Slice THIS route between THESE snapped points
+                    try:
+                        seg = slice_route_between_points(
+                            route_geom=chosen_part,  # [[lon,lat], ...]
+                            start_point=entry.get("bop_snapped"),
+                            end_point=entry.get("eop_snapped"),
+                        )
+                    except Exception:
+                        seg = None
+
+                    entry["route_geom"] = seg
+                    computed_entries.append(entry)
+
+                _update_progress(r_idx, total_routes, f"{rid}: ready")
 
             try:
                 progress_box.empty()
             except Exception:
                 pass
 
+            if not computed_entries:
+                st.info("No routes could be created from the provided BOP/EOP points.")
+                return {}
+
             # Cache the full computed entries (with originals + snapped + geometry)
-            st.session_state[cache_key][sig] = out_entries
-            computed = out_entries
+            st.session_state[cache_key][sig] = computed_entries
+            computed = computed_entries
         else:
             computed = cached
 
+        # Optional seed (now includes originals; snapped slots preserved)
+        st.session_state["awp_route_entries"] = [
+            {
+                "route_id": e.get("route_id"),
+                "route_name": e.get("route_name"),
+                "bop_orig": e.get("bop_orig"),
+                "eop_orig": e.get("eop_orig"),
+                "bop_snapped": e.get("bop_snapped"),
+                "eop_snapped": e.get("eop_snapped"),
+            }
+            for e in computed
+        ]
+
         # ─────────────────────────────────────────────────────────────────────
         # 4) Render: tabs + map (all segments + BOP/EOP markers; fit to all)
-        #    Tabs and map ALWAYS prefer snapped values; fall back to originals.
+        # Tabs and map ALWAYS prefer snapped values; fall back to originals.
         # ─────────────────────────────────────────────────────────────────────
         # Build tab labels (ensure uniqueness if names repeat)
         def _unique_labels(bases):
@@ -1436,6 +1666,7 @@ def aashtoware_path(points, container):
                 with colB:
                     ro_widget(key=f"awp_bop_lon_{idx}", label="BEGIN Longitude",
                               value=(bop_ll[0] if isinstance(bop_ll, (list, tuple)) else None))
+
                 colC, colD = st.columns(2)
                 with colC:
                     ro_widget(key=f"awp_eop_lat_{idx}", label="END Latitude",
@@ -1455,6 +1686,7 @@ def aashtoware_path(points, container):
             if pt:
                 first_pt = pt
                 break
+
         start_latlon = [first_pt[1], first_pt[0]] if first_pt else [64.0, -152.0]
         m = folium.Map(location=start_latlon, zoom_start=10)
 
@@ -1492,6 +1724,7 @@ def aashtoware_path(points, container):
                     ).add_to(m)
                 except Exception:
                     pass
+
             if isinstance(eop, (list, tuple)) and len(eop) == 2:
                 all_points_lonlat.append(eop)
                 try:
@@ -1511,10 +1744,12 @@ def aashtoware_path(points, container):
             except Exception:
                 pass
 
+
         _ = st_folium(
             m,
             use_container_width=True,
             height=520,
+            zoom = set_zoom(bounds),
             returned_objects=["last_clicked"],  # no pan/zoom reruns
         )
 
@@ -1524,19 +1759,19 @@ def aashtoware_path(points, container):
         def _as_list_of_lines(seg):
             """
             Normalize route_geom into a list of polylines.
-            - If seg is a single polyline: [[lon,lat], ...] → [seg]
-            - If seg is multi-part: [[[lon,lat],...], [[lon,lat],...]] → seg
+            - If seg is a single polyline: [[lon,lat], ...] -> [seg]
+            - If seg is multi-part: [[[lon,lat],...], [[lon,lat],...]] -> seg
             - Otherwise: return []
             """
             if not isinstance(seg, list) or not seg:
                 return []
             # single part: [[lon,lat], ...]
             if (isinstance(seg[0], (list, tuple)) and len(seg[0]) == 2
-                and all(isinstance(v, (int, float)) for v in seg[0])):
+                    and all(isinstance(v, (int, float)) for v in seg[0])):
                 return [seg]
             # multi-part: [[[lon,lat],...], ...]
             if (isinstance(seg[0], (list, tuple)) and seg
-                and isinstance(seg[0][0], (list, tuple)) and len(seg[0][0]) == 2):
+                    and isinstance(seg[0][0], (list, tuple)) and len(seg[0][0]) == 2):
                 return seg
             return []
 
