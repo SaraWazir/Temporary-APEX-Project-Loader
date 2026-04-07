@@ -235,76 +235,29 @@ def project_payload():
         # Determine center based on selected geometry
         if st.session_state.get("selected_point"):
             proj_type = "Site"
+            geoms = st.session_state['selected_point']
+            geom_type = 'point'
         elif st.session_state.get("selected_route"):
             proj_type = "Route"
+            geoms = st.session_state['selected_route']
+            geom_type = 'line'
         elif st.session_state.get("selected_boundary"):
             proj_type = "Boundary"
+            geoms = st.session_state['selected_boundary']
+            geom_type = 'polygon'
 
-        # Create Buffer Version of Geometry for Geospatial Base
-        geoms = st.session_state.get("project_geom")
-        geom_type = (st.session_state.get("project_geom_type") or "").lower()
         if not geoms or not isinstance(geoms, (list, tuple)):
             raise RuntimeError("No project geometries available in session.")
 
-        # Normalize single point -> list of one point (NO ORDER SWAP)
-        if (
-            isinstance(geoms, (list, tuple))
-            and len(geoms) == 2
-            and all(isinstance(v, (int, float)) for v in geoms)
-        ):
-            geoms = [geoms]
-
-        # --- Split by kind (copying the impact_area method) ---
-        points, lines, polys = [], [], []
-
-        def _as_lonlat_pair(v):
-            return [float(v[0]), float(v[1])]
-
-        for item in geoms:
-            # POINT: [lon, lat]
-            if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(v, (int, float)) for v in item):
-                points.append(_as_lonlat_pair(item))
-            # LINE/POLY: [[lon, lat], ...]
-            elif (
-                isinstance(item, (list, tuple))
-                and item
-                and isinstance(item[0], (list, tuple))
-                and len(item[0]) == 2
-                and all(isinstance(v, (int, float)) for v in item[0])
-            ):
-                coords = [_as_lonlat_pair(p) for p in item]
-                is_closed = len(coords) >= 4 and coords[0] == coords[-1]
-                if is_closed:
-                    polys.append(coords)
-                else:
-                    lines.append(coords)
-
         # --- Create buffers (fixed distances by kind) ---
-        buffers = []
-        if geom_type in ("point",):
-            if points:
-                buffers += create_buffers(geometry_list=points, geom_type="point", distance_m=.0001)
-        elif geom_type in ("line", "linestring"):
-            if lines:
-                buffers += create_buffers(geometry_list=lines, geom_type="line", distance_m=.0001)
-        elif geom_type in ("polygon",):
-            if polys:
-                buffers += create_buffers(geometry_list=polys, geom_type="polygon", distance_m=.0001)
-        else:
-            # Fallback: make buffers for whatever was detected
-            if points:
-                buffers += create_buffers(geometry_list=points, geom_type="point", distance_m=.0001)
-            if lines:
-                buffers += create_buffers(geometry_list=lines, geom_type="line", distance_m=.0001)
-            if polys:
-                buffers += create_buffers(geometry_list=polys, geom_type="polygon", distance_m=.0001)
-
-        if not buffers:
+        buffer = create_buffers(geometry_list=geoms, geom_type=geom_type, distance_m=.0001)
+    
+        if not buffer:
             raise RuntimeError("Buffering produced no output (check geometry and distances).")
 
         # --- ESRI Polygon geometry (multipart via rings) ---
         esri_polygon = {
-            "rings": buffers,  # list of rings (each is [[lon, lat], ...])
+            "rings": buffer,  # list of rings (each is [[lon, lat], ...])
             "spatialReference": {"wkid": 4326},
         }
 
@@ -365,6 +318,7 @@ def project_payload():
             ]
         }
         return clean_payload(payload, 'adds')
+        
     except Exception as e:
         # Bubble up error so caller can handle with st.error
         raise RuntimeError(f"Error building project payload: {e}")

@@ -23,146 +23,99 @@ from shapely.geometry import (
 from shapely.ops import transform, unary_union
 import pyproj
 
+
+from shapely.geometry import (
+    Point as ShapelyPoint,
+    LineString as ShapelyLineString,
+    Polygon as ShapelyPolygon,
+    MultiPolygon,
+)
+from shapely.ops import transform, unary_union, polygonize
+import pyproj
+
+
 def create_buffers(
-    geometry_list: List[Sequence],
-    geom_type: Literal["Point", "LineString", "Polygon", "point", "line", "linestring", "polygon"],
-    distance_m: float,
+    geometry_list,
+    geom_type,
+    distance_m,
     *,
-    crs_in: str = "EPSG:4326",
-    crs_projected: str = "EPSG:3338",
-    crs_out: str = "EPSG:4326",
-    cap_style: Literal["round", "flat", "square"] = "round",
-    join_style: Literal["round", "mitre", "miter", "bevel"] = "round",
-    resolution: int = 16,
-) -> List[List[List[float]]]:
+    crs_in="EPSG:4326",
+    crs_projected="EPSG:3338",
+    crs_out="EPSG:4326",
+    cap_style="round",
+    join_style="round",
+    resolution=16,
+):
     """
-    Create buffers for input geometries, dissolve them into a single (multi)polygon,
-    and return the merged buffer's exterior ring(s) in [lon, lat].
-
-    Parameters
-    ----------
-    geometry_list : list
-        List of geometries. Coordinates must be in [lon, lat] order for EPSG:4326 (or the CRS you pass).
-        - Point: [lon, lat] or [[lon, lat]]
-        - LineString: [[lon, lat], [lon, lat], ...]
-        - Polygon: [[lon, lat], ..., [lon, lat]] (closed or open ring)
-    geom_type : {"Point","LineString","Polygon"} (case-insensitive; "Line" also allowed)
-        The geometry type of items in geometry_list.
-    distance_m : float
-        Buffer distance in meters (performed in crs_projected).
-    crs_in, crs_projected, crs_out : str
-        Input CRS, metric CRS for buffering, and output CRS (default 4326).
-    cap_style : {"round","flat","square"}
-        Line buffer cap style at segment ends (ignored for polygons/points).
-    join_style : {"round","mitre","miter","bevel"}
-        Line vertex join style (ignored for polygons/points). "miter" is accepted as alias of "mitre".
-    resolution : int
-        Number of segments to approximate a quarter circle in buffer.
-
-    Returns
-    -------
-    List[List[List[float]]]
-        Exterior ring(s) of the merged buffer polygon(s) as closed lists of [lon, lat] coordinates.
-        If the merge produces multiple disjoint polygons, one ring per polygon is returned.
-        (Holes are not included—consistent with previous behavior.)
+    Create buffers for points, lines, or polygons and return a
+    unified polygon footprint consistent across geometry types.
     """
-    # Shapely accepts integer codes for cap/join styles:
-    # cap_style: round=1, flat=2, square=3
-    # join_style: round=1, mitre/miter=2, bevel=3
-    cap_lookup = {"round": 1, "flat": 2, "square": 3}
-    join_lookup = {"round": 1, "mitre": 2, "miter": 2, "bevel": 3}
-    cap_key = cap_style.lower()
-    join_key = join_style.lower()
-    if cap_key not in cap_lookup:
-        raise ValueError("cap_style must be 'round', 'flat', or 'square'")
-    if join_key not in join_lookup:
-        raise ValueError("join_style must be 'round', 'mitre'/'miter', or 'bevel'")
 
-    # Configure transformers (always_xy=True enforces lon,lat axis order)
-    to_proj = pyproj.Transformer.from_crs(crs_in, crs_projected, always_xy=True).transform
-    to_out = pyproj.Transformer.from_crs(crs_projected, crs_out, always_xy=True).transform
+    if not geometry_list:
+        raise ValueError("geometry_list must not be empty")
 
-    # Normalize geom_type
+    # CRS transforms
+    to_projected = pyproj.Transformer.from_crs(
+        crs_in, crs_projected, always_xy=True
+    ).transform
+    to_geographic = pyproj.Transformer.from_crs(
+        crs_projected, crs_out, always_xy=True
+    ).transform
+
+    # Normalize geometries
+    shapely_geoms = []
     gt = geom_type.lower()
-    if gt in ("line", "linestring"):
-        gt = "linestring"
-    elif gt in ("point", "polygon"):
-        pass
-    else:
-        raise ValueError("geom_type must be 'Point', 'LineString', or 'Polygon'")
 
-    def _as_lonlat_tuples(seq: Sequence[Sequence[float]]):
-        # Ensure an iterable of (lon, lat) tuples with numeric values
-        return [(float(lon), float(lat)) for lon, lat in seq]
-
-    def build_geom(item: Sequence):
-        if gt == "point":
-            # Accept [lon, lat] or [[lon, lat]] (take first)
-            if isinstance(item, (ShapelyPoint,)):
-                return item
-            if isinstance(item[0], (int, float)):
-                lon, lat = item  # type: ignore
+    for g in geometry_list:
+        if isinstance(g, (ShapelyPoint, ShapelyLineString, ShapelyPolygon)):
+            shp = g
+        else:
+            if gt == "point":
+                shp = ShapelyPoint(g)
+            elif gt in ("line", "linestring"):
+                shp = ShapelyLineString(g)
+            elif gt == "polygon":
+                shp = ShapelyPolygon(g)
             else:
-                lon, lat = item[0]  # type: ignore
-            return ShapelyPoint((float(lon), float(lat)))
-        elif gt == "linestring":
-            if isinstance(item, (ShapelyLineString, ShapelyMultiLineString)):
-                return item
-            coords = _as_lonlat_tuples(item)  # type: ignore
-            return ShapelyLineString(coords)
-        elif gt == "polygon":
-            if isinstance(item, (ShapelyPolygon, ShapelyMultiPolygon)):
-                return item
-            ring = list(item)  # type: ignore
-            if len(ring) < 3:
-                raise ValueError("Polygon ring must have at least 3 coordinate pairs")
-            # Ensure closed ring
-            if ring[0] != ring[-1]:
-                ring = ring + [ring[0]]
-            coords = _as_lonlat_tuples(ring)
-            return ShapelyPolygon(coords)
-        raise ValueError("Unsupported geometry type")
+                raise ValueError(f"Unsupported geometry type: {geom_type}")
+        shapely_geoms.append(shp)
 
-    # --- Build per-item geometries in projected CRS and buffer them ---
-    buffered_parts = []
-    for item in geometry_list:
-        geom_in = build_geom(item)
-        geom_proj = transform(to_proj, geom_in)
-        buf_proj = geom_proj.buffer(
-            distance_m,
-            resolution=resolution,
-            cap_style=cap_lookup[cap_key],
-            join_style=join_lookup[join_key],
+    # Buffer each geometry independently
+    buffered = []
+    for shp in shapely_geoms:
+        projected = transform(to_projected, shp)
+        buffered.append(
+            projected.buffer(
+                distance_m,
+                resolution=resolution,
+                cap_style={"round": 1, "flat": 2, "square": 3}[cap_style],
+                join_style={"round": 1, "mitre": 2, "miter": 2, "bevel": 3}[join_style],
+            )
         )
-        buffered_parts.append(buf_proj)
 
-    if not buffered_parts:
-        return []
+    # Dissolve buffers
+    merged = unary_union(buffered)
 
-    # --- Merge (dissolve) all buffers into one (multi)polygon ---
-    merged_proj = unary_union(buffered_parts)
+    # 🔑 NORMALIZE RESULT (points behave like lines/polygons)
+    if isinstance(merged, MultiPolygon):
+        # Collapse multipart into unified footprint
+        merged = unary_union(list(polygonize(merged.boundary)))
 
-    # --- Transform back to output CRS and extract exterior ring(s) only ---
-    merged_out = transform(to_out, merged_proj)
+    # Reproject back to lon/lat
+    merged = transform(to_geographic, merged)
 
-    buffers_lonlat: List[List[List[float]]] = []
+    # Extract exterior rings ONLY
+    polygons = (
+        merged.geoms if isinstance(merged, MultiPolygon) else [merged]
+    )
 
-    if isinstance(merged_out, ShapelyPolygon):
-        ext_coords = [[float(x), float(y)] for (x, y) in merged_out.exterior.coords]
-        if ext_coords[0] != ext_coords[-1]:
-            ext_coords.append(ext_coords[0])
-        buffers_lonlat.append(ext_coords)
-    elif isinstance(merged_out, ShapelyMultiPolygon):
-        for poly in merged_out.geoms:
-            ext_coords = [[float(x), float(y)] for (x, y) in poly.exterior.coords]
-            if ext_coords[0] != ext_coords[-1]:
-                ext_coords.append(ext_coords[0])
-            buffers_lonlat.append(ext_coords)
-    else:
-        # In edge cases (e.g., empty result), return []
-        return []
+    rings = []
+    for poly in polygons:
+        rings.append([[x, y] for x, y in poly.exterior.coords])
 
-    return buffers_lonlat
+    return rings
+
+
 
 
 def center_of_geometry(

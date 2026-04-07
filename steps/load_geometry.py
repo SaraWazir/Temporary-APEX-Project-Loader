@@ -212,9 +212,9 @@ def load_geometry_app():
             gt = st.session_state.get("geom_type")
             if gt == "point" and st.session_state.get("selected_point") is None:
                 st.session_state["selected_point"] = st.session_state["project_geometry"]
-            elif gt == "route" and st.session_state.get("selected_route") is None:
+            elif gt == "line" and st.session_state.get("selected_route") is None:
                 st.session_state["selected_route"] = st.session_state["project_geometry"]
-            elif gt == "boundary" and st.session_state.get("selected_boundary") is None:
+            elif gt == "polygon" and st.session_state.get("selected_boundary") is None:
                 st.session_state["selected_boundary"] = st.session_state["project_geometry"]
 
         # ------------------------------
@@ -344,10 +344,10 @@ def load_geometry_app():
                     geom_type = "point"
                 elif project_type.startswith("Route") and route_val is not None:
                     geom = route_val
-                    geom_type = "route"
+                    geom_type = "line"
                 elif project_type.startswith("Boundary") and boundary_val is not None:
                     geom = boundary_val
-                    geom_type = "boundary"
+                    geom_type = "polygon"
                 else:
                     st.session_state["footprint_submitted"] = False
                     st.error("Project type and footprint are inconsistent. Please reselect and submit again.")
