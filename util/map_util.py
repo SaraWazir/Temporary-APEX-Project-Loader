@@ -648,44 +648,79 @@ def set_bounds_route(route):
 def set_bounds_boundary(boundary):
     """
     Compute a bounding box for:
-    - A single polygon (list of rings)
-    - A list of polygons
-    - Any nested structure containing [lat, lon] pairs
+      - A single polygon (list of rings)
+      - A list of polygons
+      - A flat list of [lon, lat] coordinate pairs
 
     Returns:
-        [[min_lat, min_lon], [max_lat, max_lon]]
+        [[min_lon, min_lat], [max_lon, max_lat]]
+
+    Raises:
+        ValueError: if input is empty or no valid coordinates are found.
+
+    Notes:
+        - This function assumes coordinate order is [lon, lat].
+        - It supports multiple polygons and rings (outer/inner).
     """
+    min_lat = float('inf')
+    min_lon = float('inf')
+    max_lat = float('-inf')
+    max_lon = float('-inf')
 
-    lats = []
-    lons = []
-
-    def walk(obj):
-        if obj is None:
+    def process_point(pt):
+        nonlocal min_lon, min_lat, max_lon, max_lat
+        if not (isinstance(pt, (list, tuple)) and len(pt) == 2):
             return
 
-        # Coordinate pair
-        if (
-            isinstance(obj, (list, tuple))
-            and len(obj) == 2
-            and all(isinstance(v, (int, float)) for v in obj)
-        ):
-            lat, lon = obj
-            if -90 <= lat <= 90 and -180 <= lon <= 180:
-                lats.append(lat)
-                lons.append(lon)
+        # Input points are [lon, lat]
+        lon, lat = pt
+
+        # Validate numeric
+        try:
+            lon = float(lon)
+            lat = float(lat)
+        except Exception:
             return
 
-        # Recursive descent
-        if isinstance(obj, (list, tuple)):
-            for item in obj:
-                walk(item)
+        # Update bounds
+        min_lat = min(min_lat, lat)
+        max_lat = max(max_lat, lat)
+        min_lon = min(min_lon, lon)
+        max_lon = max(max_lon, lon)
 
-    walk(boundary)
+    def process_polygon(poly):
+        # poly = [ring1, ring2, ...]
+        for ring in poly:
+            if isinstance(ring, (list, tuple)):
+                for pt in ring:
+                    process_point(pt)
 
-    if not lats or not lons:
-        raise ValueError("No valid polygon coordinates found for bounds calculation")
+    # --- Determine input type ---
+    if not boundary:
+        raise ValueError("Empty polygon input.")
 
-    return [[min(lats), min(lons)], [max(lats), max(lons)]]
+    # Case 1: Flat list of coordinate pairs
+    if all(isinstance(x, (list, tuple)) and len(x) == 2 for x in boundary):
+        for pt in boundary:
+            process_point(pt)
+
+    # Case 2: Single polygon (list of rings)
+    elif all(isinstance(ring, (list, tuple)) for ring in boundary) and \
+            any(isinstance(ring[0], (list, tuple)) for ring in boundary):
+        process_polygon(boundary)
+
+    # Case 3: List of polygons
+    else:
+        for poly in boundary:
+            if isinstance(poly, (list, tuple)):
+                process_polygon(poly)
+
+    # --- Validate ---
+    if min_lat == float('inf'):
+        raise ValueError("No valid coordinate data found.")
+
+    # Return bounds as [[min_lon, min_lat], [max_lon, max_lat]]
+    return [[min_lat, min_lon], [max_lat, max_lon]]
 
 
 # =============================================================================
