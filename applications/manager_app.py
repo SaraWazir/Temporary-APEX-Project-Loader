@@ -6,6 +6,7 @@ def run_manager_app():
     from tabs.traffic_impacts import manage_traffic_impacts
     from tabs.communities import manage_impacted_communities
     from tabs.information import manage_information
+    from tabs.deployment import manage_deployment
 
     # ─────────────────────────────────────────────────────────────
     # Helpers
@@ -461,7 +462,8 @@ def run_manager_app():
                     manage_impacted_communities()
 
             def _tab_deployment():
-                st.info("Deployment Management Tab Under Development")
+                with st.container(border=True):
+                    manage_deployment()
 
             TAB_DISPATCH = {
                 "INFORMATION": _tab_information,

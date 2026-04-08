@@ -215,13 +215,28 @@ def init_session_state():
             "2028",
             "2029",
             "2030"
+        ],
+        'deployment_status_vals' : [
+            "",
+            'Review:  Awaiting Review',
+            'Review: Review in Progress',
+            'Review:  Returned for Edits',
+            'Published',
+            'Marked for Deletion',
+            'Archived',
+        ],
+        'target_applications_vals' : [
+            "",
+            'Traffic Impacts',
+            'Dashboard',
+            'Infosheet'
         ]
     }
+
     for key, value in value_lists.items():
         st.session_state.setdefault(key, value)
 
 
-    
 
     # -------------------------------------------------------------------------
     # AGOL URLS
@@ -383,29 +398,8 @@ def init_session_state():
                 v = "awp_" + v
             st.session_state["awp_fields"][key] = v
 
-    # # ======================================================
-    # # DATA UPLOADERS
-    # # ======================================================
-    # # Values for attribution / uploader selection UI.
-    # uploaders = ["",
-    #     "Christopher Butrico",
-    #     "Riley Conley",
-    #     "Casey DunnGossin",
-    #     "Caitlin Frye",
-    #     "Jennifer Gross",
-    #     "Alexander Hutcherson",
-    #     "Karin McGillivray",
-    #     "Charles Ross",
-    #     "Andrew Tuell",
-    #     "Callan VanNuys",
-    #     "Malia Walters",
-    #     "Sara Wazir",
-    #     "Gretchen WeissBrooks",
-    #     "Hannah White",
-    #     "Lauren Winkler",
-    #     "Other"]
-    # st.session_state['uploaders'] =uploaders
 
+    
     
 # -----------------------------------------------------------------------------
 # RUN AUTOMATICALLY WHEN IMPORTED
