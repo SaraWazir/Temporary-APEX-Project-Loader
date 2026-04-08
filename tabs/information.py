@@ -232,9 +232,9 @@ def _load_awp_by_contract_id_and_switch():
 
     # Per your instruction: query by CONTRACT_Id and use the selected Id as the value.
     recs = select_record(
-        url=awp_url,
-        layer=awp_layer,
-        id_field="CONTRACT_Id",
+        url=st.session_state["aashtoware_url"],
+        layer=st.session_state["awp_contracts_layer"],
+        id_field="Id",
         id_value=selected_id,
         return_geometry=False
     )

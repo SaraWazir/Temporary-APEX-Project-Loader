@@ -921,7 +921,6 @@ def manage_traffic_impact_payloads(package: dict, edit_type=None, which: str = "
 
             if et == "adds":
                 parent_attrs = {
-                    "Event_Name":             event_name,
                     "Route_ID":               route_id,
                     "Route_Name":             route_name,
                     "Start_X":                (sp[0] if isinstance(sp, (list, tuple)) and len(sp) == 2 else None),
@@ -955,7 +954,6 @@ def manage_traffic_impact_payloads(package: dict, edit_type=None, which: str = "
                     raise ValueError("Parent update requires package['objectid'].")
                 parent_attrs = {
                     "objectId":   parent_oid,
-                    "Event_Name": event_name,
                     "Route_ID":   route_id,
                     "Route_Name": route_name,
                     "Start_X":    sp[0],
