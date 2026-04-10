@@ -218,9 +218,9 @@ def init_session_state():
         ],
         'database_status_vals' : [
             "",
-            'Review:  Awaiting Review',
+            'Review: Awaiting Review',
             'Review: Review in Progress',
-            'Review:  Returned for Edits',
+            'Review: Returned for Edits',
             'Published',
             'Marked for Deletion',
             'Archived',

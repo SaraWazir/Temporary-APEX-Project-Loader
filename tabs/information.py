@@ -8,7 +8,8 @@ from agol.agol_util import (
     AGOLDataLoader
 )
 from agol.agol_payloads import (
-    manage_information_payload
+    manage_information_payload,
+    manage_project_name_update
 )
 from util.read_only_util import ro_widget
 from util.input_util import (
@@ -23,7 +24,7 @@ from util.input_util import (
 )
 # ⬇️ also import aashtoware_project so we can render the selector
 from util.streamlit_util import session_selectbox, aashtoware_project
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional, Union
 
 
 # -----------------------------------------------------------------------------
@@ -277,6 +278,17 @@ def _build_information_package(is_awp) -> dict:
             # 8. Web Link
             "proj_web": st.session_state.get("proj_web"),
         }
+    
+def _build_project_name_payload():
+    """
+    Build a package to update footprint project names
+    """
+    return {
+        # 1. Project Name
+        "awp_proj_name": st.session_state.get("awp_proj_name"),
+        "proj_name": st.session_state.get("proj_name")
+     }
+
 
 
 # -----------------------------------------------------------------------------
@@ -432,38 +444,6 @@ def _load_awp_by_contract_id_and_switch():
 
 
 
-# -----------------------------------------------------------------------------
-# Placeholder action handlers wired to buttons
-# (now updated to show the AWP picker and seed defaults)
-# -----------------------------------------------------------------------------
-def _on_update_aashtoware_information(is_awp):
-    """Placeholder action for 'UPDATE AASHTOWARE INFORMATION' button."""
-    package = _build_information_package(is_awp)
-    # Include OBJECTID for updates when available
-    if "apex_object_id" in st.session_state:
-        package["objectid"] = st.session_state.apex_object_id
-    # Build the AGOL applyEdits payload (updates)
-    payload = manage_information_payload(package, 'updates')
-
-    # --- Progress placeholder is stored by the UI section right under the buttons ---
-    progress_ph = st.session_state.get("info_progress_placeholder")
-
-    # === actually deploy to AGOL with in-place progress updates ===
-    result = deploy_to_agol_information(payload, "updates", progress_placeholder=progress_ph)
-
-    # Clear the progress bar after completion (success or failure)
-    try:
-        if progress_ph is not None:
-            progress_ph.empty()
-    except Exception:
-        # If Streamlit already cleared/invalidated the placeholder on rerun, ignore
-        pass
-
-    # After a successful AGOL update, revert back to project-record display mode
-    if isinstance(result, dict) and result.get("success") is True:
-        st.session_state[INFO_AWP_TRIGGER_KEY] = False
-
-
 def _on_change_aashtoware_connection():
     """Action for 'CHANGE AASHTOWARE CONNECTION' button."""
     # Trigger AWP value usage ONLY for this connect/change flow
@@ -529,17 +509,42 @@ def _on_update_information(is_awp):
     Shows progress during AGOL deployment and clears it on completion.
     """
     package = _build_information_package(is_awp)
+    project_name_package = _build_project_name_payload()
+
     # Include OBJECTID for updates when available
     if "apex_object_id" in st.session_state:
         package["objectid"] = st.session_state.apex_object_id
     # Build the AGOL applyEdits payload (updates)
     payload = manage_information_payload(package, 'updates')
 
+    # Bould Footprint Payload
+    proj_type = st.session_state['apex_proj_type']
+    if proj_type == "Site":
+        footprint_layer = st.session_state['sites_layer']
+    elif proj_type == "Route":
+        footprint_layer = st.session_state['routes_layer']
+    elif proj_type == "Boundary":
+        footprint_layer = st.session_state['boundaries_layer']
+    footprint_payload = manage_project_name_update(st.session_state['apex_url'],
+                                                   layer = footprint_layer,
+                                                   id_field = 'parentglobalid',
+                                                   guid = st.session_state['apex_guid'],
+                                                   package_out = project_name_package, 
+                                                   edit_type='updates')
+    
+    # Build Traffic Impacts Payload
+    traffic_impact_payload = manage_project_name_update(st.session_state['traffic_impact_url'],
+                                                   layer = st.session_state['traffic_impacts_layer'],
+                                                   id_field = 'APEX_GUID',
+                                                   guid = st.session_state['apex_guid'],
+                                                   package_out = project_name_package, 
+                                                   edit_type='updates')
+
     # --- Progress placeholder is stored by the UI section right under the buttons ---
     progress_ph = st.session_state.get("info_progress_placeholder")
 
     # === actually deploy to AGOL with in-place progress updates ===
-    result = deploy_to_agol_information(payload, "updates", progress_placeholder=progress_ph)
+    result = deploy_to_agol_information(payload, footprint_layer, footprint_payload, traffic_impact_payload, "updates", progress_placeholder=progress_ph)
 
     # Clear the progress bar after completion (success or failure)
     try:
@@ -554,32 +559,40 @@ def _on_update_information(is_awp):
     if isinstance(result, dict) and result.get("success") is True:
         _reset_information_form_state_after_update()
 
-    
+
 
 
 def deploy_to_agol_information(
     payload: Dict[str, Any],
+    footprint_layer: int,
+    footprint_payload: Dict[str, Any],
+    traffic_impacts_payload: Dict[str, Any],
     edit_type: str,
     *,
     progress_placeholder: Optional[st.delta_generator.DeltaGenerator] = None,
 ) -> Dict[str, Any]:
     """
-    Submit the Project Information applyEdits payload to AGOL.
-    - Uses st.session_state['apex_url'] and st.session_state['projects_layer'].
-    - Supports ONLY 'adds' and 'updates'. 'deletes' is explicitly rejected.
-    - Normalizes OBJECTID key casing for updates if needed.
+    Submit applyEdits payloads to AGOL for:
+      1) Project Information
+      2) Footprint layer (already resolved numeric layer index)
+      3) Traffic Impacts layer
+
+    - Supports ONLY 'updates'
+    - Normalizes OBJECTID casing as needed
     """
+
     base_url = st.session_state.get("apex_url")
-    layer_idx = st.session_state.get("projects_layer")
-    if base_url is None or layer_idx is None:
-        st.error("AGOL Projects layer is not configured (missing apex_url or projects_layer).")
-        return {"success": False, "message": "Layer not configured"}
+    projects_layer_idx = st.session_state.get("projects_layer")
 
-    if edit_type not in ("adds", "updates"):
-        st.warning("manage_information does not support deletes. Skipping request.")
-        return {"success": False, "message": f"Unsupported edit_type '{edit_type}'"}
+    traffic_impact_url = st.session_state.get("traffic_impact_url")
+    traffic_impacts_layer = st.session_state.get("traffic_impacts_layer")
 
-    loader = AGOLDataLoader(base_url, layer_idx)
+    if base_url is None or projects_layer_idx is None:
+        st.error("AGOL Projects layer is not configured.")
+        return {"success": False, "message": "Projects layer not configured"}
+
+    if edit_type != "updates":
+        return {"success": False, "message": "Only 'updates' are supported"}
 
     def _progress(frac: float, text: str):
         if progress_placeholder is not None:
@@ -587,28 +600,137 @@ def deploy_to_agol_information(
         else:
             st.progress(frac, text=text)
 
-    # Show initial state
-    _progress(0.0, f"Submitting {edit_type} to AGOL…")
+    def _normalize_objectid_updates(p: Dict[str, Any]) -> None:
+        if not isinstance(p, dict):
+            return
+        for rec in p.get("updates", []) or []:
+            attrs = rec.get("attributes", {})
+            if "OBJECTID" not in attrs and "objectId" in attrs:
+                attrs["OBJECTID"] = attrs.pop("objectId")
+
+    def _reject_non_updates(p: Dict[str, Any], label: str) -> Optional[Dict[str, Any]]:
+        if p.get("adds"):
+            return {"success": False, "message": f"{label} payload contains adds"}
+        if p.get("deletes"):
+            return {"success": False, "message": f"{label} payload contains deletes"}
+        return None
+
+    _progress(0.0, "Submitting updates to AGOL…")
 
     try:
-        if edit_type == "adds":
-            # payload should be {"adds":[{ "attributes": {...} }]}
-            result = loader.add_features(payload)
-        elif edit_type == "updates":
-            # Normalize OBJECTID casing if caller supplied "objectId"
-            if isinstance(payload, dict) and "updates" in payload:
-                for rec in payload.get("updates") or []:
-                    attrs = rec.get("attributes", {})
-                    if "OBJECTID" not in attrs and "objectId" in attrs:
-                        attrs["OBJECTID"] = attrs.pop("objectId")
-            result = loader.update_features(payload)
-        else:
-            # Should never hit given the earlier check; keep for safety.
-            return {"success": False, "message": f"Unsupported edit_type '{edit_type}'"}
+        # ----------------------------
+        # 1) Project Information
+        # ----------------------------
+        _progress(0.2, "Updating Project Information…")
+
+        _normalize_objectid_updates(payload)
+        project_loader = AGOLDataLoader(base_url, projects_layer_idx)
+        project_result = project_loader.update_features(payload)
+
+        if project_result.get("success") is False:
+            return {
+                "success": False,
+                "message": "Project update failed",
+                "project": project_result,
+                "footprint": None,
+                "traffic_impacts": None,
+            }
+
+        # ----------------------------
+        # 2) Footprint Layer
+        # ----------------------------
+        footprint_result = None
+
+        if footprint_payload.get("updates"):
+            err = _reject_non_updates(footprint_payload, "Footprint")
+            if err:
+                err["project"] = project_result
+                return err
+
+            if footprint_layer is None:
+                return {
+                    "success": False,
+                    "message": "Footprint layer index not provided",
+                    "project": project_result,
+                    "footprint": None,
+                    "traffic_impacts": None,
+                }
+
+            _progress(0.6, "Updating Footprint Layer…")
+
+            _normalize_objectid_updates(footprint_payload)
+            footprint_loader = AGOLDataLoader(base_url, footprint_layer)
+            footprint_result = footprint_loader.update_features(footprint_payload)
+
+            if footprint_result.get("success") is False:
+                return {
+                    "success": False,
+                    "message": "Footprint update failed",
+                    "project": project_result,
+                    "footprint": footprint_result,
+                    "traffic_impacts": None,
+                }
+
+        # ----------------------------
+        # 3) Traffic Impacts Layer
+        # ----------------------------
+        traffic_impacts_result = None
+
+        if traffic_impacts_payload.get("updates"):
+            err = _reject_non_updates(traffic_impacts_payload, "Traffic Impacts")
+            if err:
+                err["project"] = project_result
+                err["footprint"] = footprint_result
+                return err
+
+            if not traffic_impact_url or traffic_impacts_layer is None:
+                return {
+                    "success": False,
+                    "message": "Traffic Impacts layer not configured",
+                    "project": project_result,
+                    "footprint": footprint_result,
+                    "traffic_impact": None,
+                }
+
+            _progress(0.85, "Updating Traffic Impacts Layer…")
+
+            _normalize_objectid_updates(traffic_impacts_payload)
+            traffic_loader = AGOLDataLoader(
+                traffic_impact_url,
+                traffic_impacts_layer,
+            )
+            traffic_impacts_result = traffic_loader.update_features(
+                traffic_impacts_payload
+            )
+
+            if traffic_impacts_result.get("success") is False:
+                return {
+                    "success": False,
+                    "message": "Traffic impacts update failed",
+                    "project": project_result,
+                    "footprint": footprint_result,
+                    "traffic_impacts": traffic_impacts_result,
+                }
+
         _progress(1.0, "Done")
-        return result or {"success": True}
+
+        return {
+            "success": True,
+            "project": project_result,
+            "footprint": footprint_result,
+            "traffic_impacts": traffic_impacts_result,
+        }
+
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        return {
+            "success": False,
+            "message": str(e),
+            "project": None,
+            "footprint": None,
+            "traffic_impacts": None,
+        }
+
+
 
 
 # -----------------------------------------------------------------------------

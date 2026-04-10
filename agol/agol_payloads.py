@@ -921,6 +921,7 @@ def manage_traffic_impact_payloads(package: dict, edit_type=None, which: str = "
 
             if et == "adds":
                 parent_attrs = {
+                    "Event_Name":             "Blank Traffic Impact",
                     "Route_ID":               route_id,
                     "Route_Name":             route_name,
                     "Start_X":                (sp[0] if isinstance(sp, (list, tuple)) and len(sp) == 2 else None),
@@ -1140,11 +1141,6 @@ def manage_communities_payloads(package_out: dict, edit_type: str) -> dict:
 
 
 
-def manage_awp_connect_payload(package_out: dict, edit_type: str) -> dict:
-    pass
-
-
-
 
 def manage_information_payload(package_out: dict, edit_type: str) -> dict:
     """
@@ -1164,6 +1160,11 @@ def manage_information_payload(package_out: dict, edit_type: str) -> dict:
 
     # Copy source-of-truth attributes
     attrs = dict(package_out)
+
+    # ------------------------------------
+    # Force database status
+    # ------------------------------------
+    attrs["database_status"] = "Review: Awaiting Review"
 
     # -----------------------------
     # OBJECTID handling (updates)
@@ -1222,6 +1223,116 @@ def manage_information_payload(package_out: dict, edit_type: str) -> dict:
 
     payload = {"adds": [{"attributes": attrs}]}
     return clean_payload(payload, "adds")
+
+
+
+
+def manage_project_name_update(
+    url,
+    layer,
+    id_field,
+    guid,
+    package_out: dict,
+    edit_type: str
+):
+    """
+    Build an AGOL applyEdits payload.
+
+    - Finds ALL records matching the id_field/guid
+    - Dynamically resolves field names based on returned record attributes
+    - Supports prefixed fields (Site_, Route_, Boundary_, etc.)
+    - Builds ONE applyEdits payload with an update entry per OBJECTID
+    - Supports ONLY 'adds' and 'updates'
+    """
+
+    if not isinstance(package_out, dict):
+        raise ValueError("package_out must be a dict")
+
+    et = (edit_type or "").strip().lower()
+    if et not in ("adds", "updates"):
+        raise ValueError("manage_project_name_update supports only 'adds' or 'updates'")
+
+    # ---------------------------------
+    # Query matching records
+    # ---------------------------------
+    recs = select_record(
+        url=url,
+        layer=layer,
+        id_field=id_field,
+        id_value=guid,
+        return_geometry=False
+    )
+
+    if not recs:
+        raise ValueError("No records found matching the provided guid")
+
+    # ---------------------------------
+    # Helper: normalize field names
+    # ---------------------------------
+    def _normalize(name: str) -> str:
+        return name.replace("_", "").lower()
+
+    def _logical_part(field_name: str) -> str:
+        """
+        Strip prefix up to the last underscore.
+        Route_Proj_Name -> Proj_Name
+        """
+        if "_" not in field_name:
+            return field_name
+        return field_name.split("_", 1)[-1]
+
+    # ---------------------------------
+    # ADDs (unchanged behavior)
+    # ---------------------------------
+    if et == "adds":
+        attrs = dict(package_out)
+        payload = {"adds": [{"attributes": attrs}]}
+        return clean_payload(payload, "adds")
+
+    # ---------------------------------
+    # UPDATEs
+    # ---------------------------------
+    updates = []
+
+    for rec in recs:
+        rec_attrs = rec.get("attributes", {})
+
+        oid = (
+            rec_attrs.get("objectid")
+            or rec_attrs.get("OBJECTID")
+            or rec_attrs.get("objectId")
+        )
+
+        if oid is None:
+            continue
+
+        resolved_attrs = {}
+
+        # Resolve package fields against record schema
+        for pkg_key, pkg_val in package_out.items():
+            pkg_norm = _normalize(pkg_key)
+
+            matched_field = None
+            for rec_field in rec_attrs.keys():
+                logical = _logical_part(rec_field)
+                if _normalize(logical) == pkg_norm:
+                    matched_field = rec_field
+                    break
+
+            if matched_field:
+                resolved_attrs[matched_field] = pkg_val
+
+        if not resolved_attrs:
+            continue
+
+        resolved_attrs["OBJECTID"] = oid
+        updates.append({"attributes": resolved_attrs})
+
+    if not updates:
+        raise ValueError("No valid update attributes resolved for any record")
+
+    payload = {"updates": updates}
+    return clean_payload(payload, "updates")
 
 
 

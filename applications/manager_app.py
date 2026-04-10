@@ -7,6 +7,7 @@ def run_manager_app():
     from tabs.communities import manage_impacted_communities
     from tabs.information import manage_information
     from tabs.deployment import manage_deployment
+    from tabs.footprint import manage_footprint
 
     # ─────────────────────────────────────────────────────────────
     # Helpers
@@ -540,7 +541,8 @@ def run_manager_app():
                     manage_information()
 
             def _tab_footprint():
-                st.info("Footprint Management Tab Under Development")
+                with st.container(border=True):
+                    manage_footprint()
 
             def _tab_traffic_impacts():
                 with st.container(border=True):
