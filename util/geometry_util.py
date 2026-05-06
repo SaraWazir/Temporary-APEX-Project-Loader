@@ -1656,8 +1656,8 @@ def aashtoware_path(points, container):
         for idx, (tab, e) in enumerate(zip(tabs, computed)):
             with tab:
                 # Prefer snapped values in tabs
-                bop_ll = e.get("bop_snapped") or e.get("bop_orig")
-                eop_ll = e.get("eop_snapped") or e.get("eop_orig")
+                bop_ll = e.get("bop_orig")
+                eop_ll = e.get("eop_orig")
 
                 colA, colB = st.columns(2)
                 with colA:
@@ -1711,8 +1711,8 @@ def aashtoware_path(points, container):
         all_points_lonlat = []
         for e in computed:
             name = (e.get("route_name") or "").strip()
-            bop = e.get("bop_snapped") or e.get("bop_orig")
-            eop = e.get("eop_snapped") or e.get("eop_orig")
+            bop = e.get("bop_orig")
+            eop = e.get("eop_orig")
 
             if isinstance(bop, (list, tuple)) and len(bop) == 2:
                 all_points_lonlat.append(bop)
