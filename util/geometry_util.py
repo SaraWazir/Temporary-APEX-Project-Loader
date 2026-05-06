@@ -1260,7 +1260,7 @@ def aashtoware_path(points, container):
         sig = _fingerprint(sig_payload)
 
         # Bump cache version because pairing logic changed (prevents stale wrong-pair cache reuse)
-        cache_key = "awp_paths_cache_v5"
+        cache_key = "awp_paths_cache_v6"
         if cache_key not in st.session_state:
             st.session_state[cache_key] = {}
         cached = st.session_state[cache_key].get(sig)
@@ -1711,8 +1711,8 @@ def aashtoware_path(points, container):
         all_points_lonlat = []
         for e in computed:
             name = (e.get("route_name") or "").strip()
-            bop = e.get("bop_orig")
-            eop = e.get("eop_orig")
+            bop_ll = e.get("bop_snapped") or e.get("bop_orig")
+            eop_ll = e.get("eop_snapped") or e.get("eop_orig")
 
             if isinstance(bop, (list, tuple)) and len(bop) == 2:
                 all_points_lonlat.append(bop)
