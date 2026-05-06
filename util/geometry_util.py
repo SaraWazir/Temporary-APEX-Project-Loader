@@ -1260,7 +1260,7 @@ def aashtoware_path(points, container):
         sig = _fingerprint(sig_payload)
 
         # Bump cache version because pairing logic changed (prevents stale wrong-pair cache reuse)
-        cache_key = "awp_paths_cache_v4"
+        cache_key = "awp_paths_cache_v7"
         if cache_key not in st.session_state:
             st.session_state[cache_key] = {}
         cached = st.session_state[cache_key].get(sig)
